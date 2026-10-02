@@ -47,7 +47,7 @@ Clone this repo, put the downloaded models below `CoreMLModels/` path and run Xc
 
 The app keeps MobileCLIP-S2 as its default until the S4 artifacts and rollout gates are available. Model specifications define the tower resource names, tokenizer resources, input size, context length, embedding dimension, and preprocessing contract. The MobileCLIP2-S4 specification expects `ImageEncoder_mobileCLIP2_s4.mlmodelc`, `TextEncoder_mobileCLIP2_s4.mlmodelc`, `vocab_mobileclip2_s4.json`, and `merges_mobileclip2_s4.txt` under `CoreMLModels/`; those artifacts are not included in this repository.
 
-Embedding indexes are stored separately per model in QEMB v2 files. Each header identifies the model, a SHA-256 fingerprint of its towers and tokenizer assets, vector dimension and scalar type, preprocessing fingerprint, normalization state, and record count. Existing untagged indexes are imported only as S2 indexes; an index with incompatible metadata is rejected and must be rebuilt. Review model checkpoint terms and distribution rights before bundling or distributing any model artifacts.
+Embedding indexes are stored separately per model and checkpoint fingerprint in QEMB v2 files. Each header identifies the model, a SHA-256 fingerprint of its towers and tokenizer assets, vector dimension and scalar type, preprocessing fingerprint, normalization state, and record count. Untagged legacy indexes and indexes with incompatible metadata are rejected and must be rebuilt because their checkpoint identity cannot be verified. Review model checkpoint terms and distribution rights before bundling or distributing any model artifacts.
 
 ## Core ML Export
 

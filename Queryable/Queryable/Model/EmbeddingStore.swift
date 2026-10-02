@@ -40,26 +40,22 @@ class EmbeddingStore: @unchecked Sendable {
     private let mainFileName: String
     private let journalFileName: String
     private let tombstoneFileName: String
-    private let legacyFileName: String
-    private let legacyBinaryFileName: String
     private let baseDir: URL
 
     init(spec: EmbeddingModelSpec, checkpointHash: String) {
         self.spec = spec
         self.checkpointHash = checkpointHash
         self.recordEmbeddingSize = spec.embeddingDimension * MemoryLayout<Float32>.size
-        let baseName = "imageEmbedding.\(spec.modelID).v2"
+        let baseName = "imageEmbedding.\(spec.modelID).\(checkpointHash).v2"
         self.mainFileName = "\(baseName).qemb"
         self.journalFileName = "\(baseName)_journal.qemb"
         self.tombstoneFileName = "\(baseName)_tombstones.txt"
-        self.legacyFileName = "imageEmbedding"
-        self.legacyBinaryFileName = "imageEmbedding.qemb"
         self.baseDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
 
     // MARK: - Load
 
-    /// Load all embeddings. Tries new binary format first, falls back to legacy NSKeyedArchiver.
+    /// Load embeddings only when their model and checkpoint metadata match this store.
     /// Returns nil if no data exists.
     func loadAll() -> [String: MLMultiArray]? {
         let mainPath = baseDir.appendingPathComponent(mainFileName)
@@ -68,13 +64,6 @@ class EmbeddingStore: @unchecked Sendable {
         if FileManager.default.fileExists(atPath: mainPath.path) ||
            FileManager.default.fileExists(atPath: journalPath.path) {
             return loadFromBinaryFormat()
-        } else if spec.modelID == EmbeddingModelSpec.mobileCLIPS2.modelID,
-                  let embeddings = loadLegacyS2() {
-            if saveAll(embeddings) {
-                try? FileManager.default.removeItem(at: baseDir.appendingPathComponent(legacyFileName))
-                try? FileManager.default.removeItem(at: baseDir.appendingPathComponent(legacyBinaryFileName))
-            }
-            return embeddings
         }
 
         return nil
@@ -106,47 +95,6 @@ class EmbeddingStore: @unchecked Sendable {
 
         print("[EmbeddingStore] Loaded \(embeddings.count) embeddings in \(String(format: "%.3f", Date().timeIntervalSince(startTime)))s")
         return embeddings.isEmpty ? nil : embeddings
-    }
-
-    /// Import untagged indexes only for the model that was hard-coded by earlier releases.
-    private func loadLegacyS2() -> [String: MLMultiArray]? {
-        let binaryPath = baseDir.appendingPathComponent(legacyBinaryFileName)
-        if let data = try? Data(contentsOf: binaryPath),
-           data.count >= 12,
-           Array(data[0..<4]) == headerMagic,
-           readUInt32(data, at: 4) == 1 {
-            var embeddings = [String: MLMultiArray]()
-            guard readRecordsFromBinary(data, startingAt: 12, into: &embeddings) else { return nil }
-            return embeddings.isEmpty ? nil : embeddings
-        }
-
-        let filePath = baseDir.appendingPathComponent(legacyFileName)
-        do {
-            let startTime = Date()
-            let data = try Data(contentsOf: filePath)
-            let decoded = try NSKeyedUnarchiver.unarchivedArrayOfObjects(
-                ofClasses: [Embedding.self, MLMultiArray.self, NSString.self],
-                from: data
-            ) as? [Embedding]
-
-            var embeddings = [String: MLMultiArray]()
-            for emb in decoded ?? [] {
-                if let id = emb.id, let embedding = emb.embedding {
-                    guard embedding.dataType == .float32,
-                          embedding.count == spec.embeddingDimension else {
-                        print("[EmbeddingStore] Rejected legacy embedding with unexpected dimensions")
-                        return nil
-                    }
-                    embeddings[id] = embedding
-                }
-            }
-
-            print("[EmbeddingStore] Loaded \(embeddings.count) legacy embeddings in \(String(format: "%.3f", Date().timeIntervalSince(startTime)))s")
-            return embeddings.isEmpty ? nil : embeddings
-        } catch {
-            print("[EmbeddingStore] Failed to load legacy format: \(error)")
-            return nil
-        }
     }
 
     // MARK: - Save
