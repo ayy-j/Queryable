@@ -36,6 +36,7 @@ class PhotoSearcher: ObservableObject {
     let defaults = UserDefaults.standard
     let photoCollection = PhotoCollection(smartAlbum: .smartAlbumUserLibrary)
     var photoSearchModel = PhotoSearcherModel()
+    private let modelSpec: EmbeddingModelSpec
     let KEY_HAS_ACCESS_TO_PHOTOS = "KEY_HAS_ACCESS_TO_PHOTOS"
 
     // -3: default, -2: Is searching now, -1: Never indexed. 0: No result. 1: Has result.
@@ -64,7 +65,7 @@ class PhotoSearcher: ObservableObject {
     /// GPU-accelerated similarity search (Float16 MPSGraph matmul)
     private var gpuSearch: GPUSimilaritySearch?
     /// Efficient binary embedding storage with incremental saves
-    private let embeddingStore = EmbeddingStore()
+    private var embeddingStore: EmbeddingStore?
 
     @Published var TOPK_SIM: Int {
         didSet {
@@ -72,10 +73,11 @@ class PhotoSearcher: ObservableObject {
         }
     }
 
-    init() {
+    init(modelSpec: EmbeddingModelSpec = .mobileCLIPS2) {
+        self.modelSpec = modelSpec
         let defaultTOPK_SIM = UserDefaults.standard.object(forKey: "TOPK_SIM") as? Int ?? 120
         self.TOPK_SIM = defaultTOPK_SIM
-        self.gpuSearch = GPUSimilaritySearch()
+        self.gpuSearch = GPUSimilaritySearch(embeddingDimension: modelSpec.embeddingDimension)
     }
 
     func changeState(from statusCode1: BUILD_INDEX_CODE, to statusCode2: BUILD_INDEX_CODE) {
@@ -91,13 +93,32 @@ class PhotoSearcher: ObservableObject {
         print("Cache cleared.")
 
         self.searchResultCode = .DEFAULT
-        print("Loading text encoder..")
-        self.photoSearchModel.load_text_encoder()
+        guard let path = Bundle.main.path(forResource: "CoreMLModels", ofType: nil, inDirectory: nil) else {
+            logger.error("Failed to find the CoreML models.")
+            self.searchResultCode = .NEVER_INDEXED
+            return
+        }
+        let resourceURL = URL(fileURLWithPath: path)
+        let modelSpec = self.modelSpec
+
+        let store: EmbeddingStore
+        do {
+            let checkpointHash = try await Task.detached(priority: .utility) {
+                try modelSpec.checkpointHash(resourcesAt: resourceURL)
+            }.value
+            try self.photoSearchModel.load_text_encoder(resourcesAt: resourceURL, spec: modelSpec)
+            store = EmbeddingStore(spec: modelSpec, checkpointHash: checkpointHash)
+            self.embeddingStore = store
+        } catch {
+            logger.error("Failed to load model contract: \(error.localizedDescription)")
+            self.searchResultCode = .NEVER_INDEXED
+            return
+        }
         print("Text encoder loaded.")
 
         // Load embeddings from binary store (background I/O)
-        let loaded = await Task.detached { [embeddingStore] in
-            return embeddingStore.loadAll()
+        let loaded = await Task.detached {
+            store.loadAll()
         }.value
 
         if let loaded, !loaded.isEmpty {
@@ -105,7 +126,13 @@ class PhotoSearcher: ObservableObject {
             print("Photos embedding loaded. total \(self.savedEmbedding.count)")
 
             // Build GPU search index
-            gpuSearch?.buildIndex(from: self.savedEmbedding)
+            do {
+                try gpuSearch?.buildIndex(from: self.savedEmbedding)
+            } catch {
+                logger.error("Rejected embedding index: \(error.localizedDescription)")
+                self.savedEmbedding.removeAll()
+                self.searchResultCode = .NEVER_INDEXED
+            }
         } else {
             self.searchResultCode = .NEVER_INDEXED
             print("Load photos embedding failure.")
@@ -162,7 +189,7 @@ class PhotoSearcher: ObservableObject {
 
         do {
             let startingTime = Date()
-            let imgEncoder = try ImgEncoder(resourcesAt: resourceURL)
+            let imgEncoder = try ImgEncoder(resourcesAt: resourceURL, spec: self.modelSpec)
             print("\(startingTime.timeIntervalSinceNow * -1) seconds used for loading img encoder")
             self.imageEncoder = imgEncoder
             self.buildIndexCode = .IS_BUILDING_INDEX
@@ -173,12 +200,12 @@ class PhotoSearcher: ObservableObject {
 
     func defaultEmbedding() -> MLShapedArray<Float32> {
         // Zero embedding: 0 cosine similarity with any query, won't appear in results
-        let zeros = [Float32](repeating: 0, count: 512)
-        return MLShapedArray<Float32>(scalars: zeros, shape: [1, 512])
+        let zeros = [Float32](repeating: 0, count: modelSpec.embeddingDimension)
+        return MLShapedArray<Float32>(scalars: zeros, shape: [1, modelSpec.embeddingDimension])
     }
 
     func batchBuildIndex(assets: [PhotoAsset]) async throws {
-        let targetSize = CGSize(width: 256, height: 256)
+        let targetSize = CGSize(width: modelSpec.imageSize, height: modelSpec.imageSize)
         await photoCollection.cache.startCaching(for: assets, targetSize: targetSize)
 
         let BATCH_SIZE = 32
@@ -285,7 +312,7 @@ class PhotoSearcher: ObservableObject {
                 for id in orphanedIds {
                     self.savedEmbedding.removeValue(forKey: id)
                 }
-                embeddingStore.markDeleted(orphanedIds)
+                embeddingStore?.markDeleted(orphanedIds)
                 gpuSearch?.removeEmbeddings(Set(orphanedIds))
             }
         }
@@ -297,28 +324,28 @@ class PhotoSearcher: ObservableObject {
     func deleteEmbeddingByAsset(asset: PhotoAsset) async {
         if self.savedEmbedding[asset.id] != nil {
             self.savedEmbedding.removeValue(forKey: asset.id)
-            embeddingStore.markDeleted([asset.id])
+            embeddingStore?.markDeleted([asset.id])
             gpuSearch?.removeEmbeddings(Set([asset.id]))
             print("\(asset.id) deleted.")
         }
     }
 
-    func updateEmbedding(new_indexed_results: [String: MLMultiArray]) {
+    func updateEmbedding(new_indexed_results: [String: MLMultiArray]) throws {
+        guard let embeddingStore else { throw EmbeddingStoreError.notReady }
         print("Before update, embedding count=\(self.savedEmbedding.count)")
-        for key in new_indexed_results.keys {
-            self.savedEmbedding[key] = new_indexed_results[key]
-        }
-        print("After update, embedding count=\(self.savedEmbedding.count)")
 
         // Incremental save: only write new embeddings to journal
-        if embeddingStore.appendNew(new_indexed_results) {
-            print("Embedding saved (incremental)")
-        } else {
-            print("Embedding not saved")
+        guard embeddingStore.appendNew(new_indexed_results) else {
+            throw EmbeddingStoreError.writeFailed
         }
 
         // Update GPU index with new embeddings
-        gpuSearch?.addEmbeddings(new_indexed_results)
+        try gpuSearch?.addEmbeddings(new_indexed_results)
+        for (key, value) in new_indexed_results {
+            self.savedEmbedding[key] = value
+        }
+        print("After update, embedding count=\(self.savedEmbedding.count)")
+        print("Embedding saved (incremental)")
     }
 
     /**
@@ -347,22 +374,26 @@ class PhotoSearcher: ObservableObject {
 
                  if curIndexingNums > 0 && self.buildingEmbedding.count >= SAVE_EMBEDDING_EVERY {
                      print("Save index for \(curIndexingNums) images.")
-                     self.updateEmbedding(new_indexed_results: self.buildingEmbedding)
+                     try self.updateEmbedding(new_indexed_results: self.buildingEmbedding)
                      self.buildingEmbedding = [String: MLMultiArray]()
                  }
             }
 
             // save embedding
-            self.updateEmbedding(new_indexed_results: self.buildingEmbedding)
+            try self.updateEmbedding(new_indexed_results: self.buildingEmbedding)
 
         } catch {
             print("Build index error: \(error). Saving \(self.buildingEmbedding.count) embeddings indexed so far.")
-            self.updateEmbedding(new_indexed_results: self.buildingEmbedding)
+            do {
+               try self.updateEmbedding(new_indexed_results: self.buildingEmbedding)
+            } catch {
+               logger.error("Failed to save indexed embeddings: \(error.localizedDescription)")
+            }
         }
 
         // Compact storage if needed
-        if embeddingStore.needsCompaction() {
-            embeddingStore.compact(self.savedEmbedding)
+        if embeddingStore?.needsCompaction() == true {
+            embeddingStore?.compact(self.savedEmbedding)
         }
 
         // delete large memory usage
@@ -410,7 +441,7 @@ class PhotoSearcher: ObservableObject {
                 for key in deletedKeys {
                     self.savedEmbedding.removeValue(forKey: key)
                 }
-                embeddingStore.markDeleted(deletedKeys)
+                embeddingStore?.markDeleted(deletedKeys)
                 gpuSearch?.removeEmbeddings(Set(deletedKeys))
                 print("\(deletedKeys.count) keys in savedEmbedding has been deleted.")
             }
@@ -425,7 +456,14 @@ class PhotoSearcher: ObservableObject {
 
         // GPU search path
         if let gpu = self.gpuSearch, gpu.count > 0 {
-            let simDict = gpu.search(queryEmbedding: _text_emb)
+            let simDict: [String: Float]
+            do {
+                simDict = try gpu.search(queryEmbedding: _text_emb)
+            } catch {
+                logger.error("Search rejected an incompatible embedding: \(error.localizedDescription)")
+                self.searchResultCode = .NO_RESULT
+                return
+            }
             let topK = simDict.sorted { $0.value > $1.value }.prefix(FINAL_TOP_K)
             print("\(startingTime.timeIntervalSinceNow * -1) seconds used for GPU search \(self.savedEmbedding.count) embeddings.")
 
@@ -470,7 +508,14 @@ class PhotoSearcher: ObservableObject {
         let FINAL_TOP_K = min(self.TOPK_SIM, self.savedEmbedding.count)
 
         if let gpu = self.gpuSearch, gpu.count > 0 {
-            let simDict = gpu.search(queryEmbedding: _img_emb)
+            let simDict: [String: Float]
+            do {
+                simDict = try gpu.search(queryEmbedding: _img_emb)
+            } catch {
+                logger.error("Similar-photo search rejected an incompatible embedding: \(error.localizedDescription)")
+                self.isFindingSimilarPhotos = false
+                return
+            }
             let topK = simDict.sorted { $0.value > $1.value }.prefix(FINAL_TOP_K)
             print("\(startingTime.timeIntervalSinceNow * -1) seconds used for GPU similar search.")
 

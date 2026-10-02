@@ -34,7 +34,7 @@ class GPUSimilaritySearch {
     /// Cached compiled graph + placeholders (invalidated when index changes)
     private var cachedGraph: CachedGraph?
 
-    private let embeddingDim: Int = 512
+    private let embeddingDim: Int
 
     var count: Int { ids.count }
 
@@ -46,18 +46,21 @@ class GPUSimilaritySearch {
         let n: Int
     }
 
-    init?() {
+    init?(embeddingDimension: Int = 512) {
         guard let device = MTLCreateSystemDefaultDevice(),
-              let commandQueue = device.makeCommandQueue() else {
+              let commandQueue = device.makeCommandQueue(),
+              embeddingDimension > 0 else {
             return nil
         }
         self.device = device
         self.commandQueue = commandQueue
+        self.embeddingDim = embeddingDimension
     }
 
     /// Build the GPU index from the in-memory embedding dictionary.
     /// Embeddings are L2-normalized and converted to Float16.
-    func buildIndex(from embeddings: [String: MLMultiArray]) {
+    func buildIndex(from embeddings: [String: MLMultiArray]) throws {
+        try validate(embeddings)
         let startTime = Date()
         let n = embeddings.count
 
@@ -115,7 +118,8 @@ class GPUSimilaritySearch {
     }
 
     /// Add new embeddings to the existing index.
-    func addEmbeddings(_ newEmbeddings: [String: MLMultiArray]) {
+    func addEmbeddings(_ newEmbeddings: [String: MLMultiArray]) throws {
+        try validate(newEmbeddings)
         var normalizedBuf = [Float32](repeating: 0, count: embeddingDim)
 
         for (id, mlArray) in newEmbeddings {
@@ -222,7 +226,10 @@ class GPUSimilaritySearch {
 
     /// Compute similarity scores for a query embedding against all stored embeddings.
     /// Returns [photoID: similarity_score].
-    func search(queryEmbedding: MLShapedArray<Float32>) -> [String: Float] {
+    func search(queryEmbedding: MLShapedArray<Float32>) throws -> [String: Float] {
+        guard queryEmbedding.scalarCount == embeddingDim else {
+            throw SimilaritySearchError.dimensionMismatch(expected: embeddingDim, actual: queryEmbedding.scalarCount)
+        }
         let n = ids.count
         guard n > 0,
               let cached = cachedGraph,
@@ -236,7 +243,7 @@ class GPUSimilaritySearch {
         let queryNorm = sqrt(vDSP.sumOfSquares(queryScalars))
         var queryFloat16 = [Float16](repeating: 0, count: embeddingDim)
         if queryNorm > 1e-8 {
-            for j in 0..<min(queryScalars.count, embeddingDim) {
+            for j in 0..<embeddingDim {
                 queryFloat16[j] = Float16(queryScalars[j] / queryNorm)
             }
         }
@@ -283,4 +290,21 @@ class GPUSimilaritySearch {
 
         return simDict
     }
+
+    private func validate(_ embeddings: [String: MLMultiArray]) throws {
+        for (id, embedding) in embeddings {
+            guard embedding.dataType == .float32, embedding.count == embeddingDim else {
+                throw SimilaritySearchError.invalidEmbedding(
+                    id: id,
+                    expected: embeddingDim,
+                    actual: embedding.count
+                )
+            }
+        }
+    }
+}
+
+enum SimilaritySearchError: Error {
+    case dimensionMismatch(expected: Int, actual: Int)
+    case invalidEmbedding(id: String, expected: Int, actual: Int)
 }

@@ -11,16 +11,14 @@ import Accelerate
 
 struct PhotoSearcherModel {
     private var texEncoder: TextEncoder?
-    
-    mutating func load_text_encoder() {
-        guard let path = Bundle.main.path(forResource: "CoreMLModels", ofType: nil, inDirectory: nil) else {
-            fatalError("Fatal error: failed to find the CoreML models.")
-        }
-        let resourceURL = URL(fileURLWithPath: path)
+    private(set) var spec: EmbeddingModelSpec = .mobileCLIPS2
+
+    mutating func load_text_encoder(resourcesAt resourceURL: URL, spec: EmbeddingModelSpec) throws {
         // TODO: move the pipeline creation to background task because it's heavy
-        
-        let encoder = try! TextEncoder(resourcesAt: resourceURL)
+
+        let encoder = try TextEncoder(resourcesAt: resourceURL, spec: spec)
         texEncoder = encoder
+        self.spec = spec
     }
     
     func text_embedding(prompt: String) -> MLShapedArray<Float32> {
