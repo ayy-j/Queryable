@@ -96,8 +96,8 @@ class GPUSimilaritySearch {
         let newMatrixBuffer = try makeMatrixBuffer(embeddingCount: newCount)
         let destination = newMatrixBuffer.contents().assumingMemoryBound(to: Float16.self)
         if let matrixBuffer, !ids.isEmpty {
-            let existingByteCount = ids.count * embeddingDim * MemoryLayout<Float16>.size
-            memcpy(destination, matrixBuffer.contents(), existingByteCount)
+            let source = matrixBuffer.contents().assumingMemoryBound(to: Float16.self)
+            destination.update(from: source, count: ids.count * embeddingDim)
         }
 
         var normalizedBuf = [Float32](repeating: 0, count: embeddingDim)
@@ -149,11 +149,8 @@ class GPUSimilaritySearch {
                 newIds.append(id)
                 let sourceOffset = i * embeddingDim
                 let destinationOffset = destinationRow * embeddingDim
-                memcpy(
-                    destination.advanced(by: destinationOffset),
-                    source.advanced(by: sourceOffset),
-                    embeddingDim * MemoryLayout<Float16>.size
-                )
+                destination.advanced(by: destinationOffset)
+                    .update(from: source.advanced(by: sourceOffset), count: embeddingDim)
                 destinationRow += 1
             }
         }
@@ -188,8 +185,20 @@ class GPUSimilaritySearch {
         if norm > 1e-8 {
             var inverseNorm = 1.0 / norm
             vDSP_vsmul(source, 1, &inverseNorm, &normalizedBuffer, 1, vDSP_Length(embeddingDim))
-            for index in 0..<embeddingDim {
-                destination[index] = Float16(normalizedBuffer[index])
+            normalizedBuffer.withUnsafeBufferPointer { sourceBuffer in
+                var sourceImage = vImage_Buffer(
+                    data: UnsafeMutableRawPointer(mutating: sourceBuffer.baseAddress!),
+                    height: 1,
+                    width: vImagePixelCount(embeddingDim),
+                    rowBytes: embeddingDim * MemoryLayout<Float32>.size
+                )
+                var destinationImage = vImage_Buffer(
+                    data: UnsafeMutableRawPointer(destination),
+                    height: 1,
+                    width: vImagePixelCount(embeddingDim),
+                    rowBytes: embeddingDim * MemoryLayout<Float16>.size
+                )
+                vImageConvert_PlanarFtoPlanar16F(&sourceImage, &destinationImage, 0)
             }
         } else {
             for index in 0..<embeddingDim {
