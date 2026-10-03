@@ -11,6 +11,8 @@ import UIKit
 ///  A model for encoding text
 public struct TextEncoder {
 
+    let spec: EmbeddingModelSpec
+
     /// Text tokenizer
     var tokenizer: BPETokenizer
 
@@ -18,11 +20,12 @@ public struct TextEncoder {
     var model: MLModel
     
     init(resourcesAt baseURL: URL,
+         spec: EmbeddingModelSpec = .mobileCLIPS2,
          configuration config: MLModelConfiguration = .init()
     ) throws {
-        let textEncoderURL = baseURL.appending(path: "TextEncoder_mobileCLIP_s2.mlmodelc")
-        let vocabURL = baseURL.appending(path: "vocab.json")
-        let mergesURL = baseURL.appending(path: "merges.txt")
+        let textEncoderURL = baseURL.appending(path: spec.textModelName)
+        let vocabURL = baseURL.appending(path: spec.vocabularyName)
+        let mergesURL = baseURL.appending(path: spec.mergesName)
         
 #if os(iOS)
         // Fallback to CPU only to avoid NN compute error on iPhone < 11 and iPad < 9th gen
@@ -34,7 +37,15 @@ public struct TextEncoder {
         // Text tokenizer and encoder
         let tokenizer = try BPETokenizer(mergesAt: mergesURL, vocabularyAt: vocabURL)
         let textEncoderModel = try MLModel(contentsOf: textEncoderURL, configuration: config)
-        
+
+        guard tokenizer.vocabulary.count == spec.vocabularySize,
+              let inputDescription = textEncoderModel.modelDescription.inputDescriptionsByName.first?.value,
+              let inputShape = inputDescription.multiArrayConstraint?.shape.map({ $0.intValue }),
+              inputShape.last == spec.contextLength else {
+            throw TextEncodingError.modelContractMismatch
+        }
+
+        self.spec = spec
         self.tokenizer = tokenizer
         self.model = textEncoderModel
     }
@@ -90,12 +101,22 @@ public struct TextEncoder {
 
         let floatIds = ids.map { Float32($0) }
         let inputArray = MLShapedArray<Float32>(scalars: floatIds, shape: inputShape)
-        let inputFeatures = try! MLDictionaryFeatureProvider(
+        let inputFeatures = try MLDictionaryFeatureProvider(
             dictionary: [inputName: MLMultiArray(inputArray)])
 
         let result = try queue.sync { try model.prediction(from: inputFeatures) }
-        let embeddingFeature = result.featureValue(for: "text_embeddings")
-        return MLShapedArray<Float32>(converting: embeddingFeature!.multiArrayValue!)
+        guard let embeddingFeature = result.featureValue(for: spec.textOutputName),
+              let multiArray = embeddingFeature.multiArrayValue,
+              multiArray.dataType == .float32,
+              multiArray.count == spec.embeddingDimension else {
+            throw TextEncodingError.invalidOutput
+        }
+        return MLShapedArray<Float32>(converting: multiArray)
+    }
+
+    enum TextEncodingError: Error {
+        case modelContractMismatch
+        case invalidOutput
     }
 
     var inputDescription: MLFeatureDescription {

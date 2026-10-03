@@ -12,6 +12,7 @@ import UIKit
 
 public struct ImgEncoder {
     var model: MLModel
+    let spec: EmbeddingModelSpec
 
     /// Shared CIContext for GPU-accelerated image processing
     private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
@@ -57,9 +58,11 @@ public struct ImgEncoder {
     }
 
     init(resourcesAt baseURL: URL,
+         spec: EmbeddingModelSpec = .mobileCLIPS2,
          configuration config: MLModelConfiguration = .init()
     ) throws {
-        let imgEncoderURL = baseURL.appending(path: "ImageEncoder_mobileCLIP_s2.mlmodelc")
+        self.spec = spec
+        let imgEncoderURL = baseURL.appending(path: spec.imageModelName)
         let imgEncoderModel = try MLModel(contentsOf: imgEncoderURL, configuration: config)
         self.model = imgEncoderModel
     }
@@ -74,17 +77,20 @@ public struct ImgEncoder {
 
     public func encode(image: UIImage) async throws -> MLShapedArray<Float32> {
         do {
-            guard let buffer = Self.resizeAndConvertToBuffer(image: image, size: CGSize(width: 256, height: 256)) else {
+            let inputSize = CGSize(width: spec.imageSize, height: spec.imageSize)
+            guard let buffer = Self.resizeAndConvertToBuffer(image: image, size: inputSize) else {
                 throw ImageEncodingError.bufferConversionError
             }
 
-            guard let inputFeatures = try? MLDictionaryFeatureProvider(dictionary: ["colorImage": buffer]) else {
+            guard let inputFeatures = try? MLDictionaryFeatureProvider(dictionary: [spec.imageInputName: buffer]) else {
                 throw ImageEncodingError.featureProviderError
             }
 
             let result = try queue.sync { try model.prediction(from: inputFeatures) }
-            guard let embeddingFeature = result.featureValue(for: "embOutput"),
-                  let multiArray = embeddingFeature.multiArrayValue else {
+            guard let embeddingFeature = result.featureValue(for: spec.imageOutputName),
+                  let multiArray = embeddingFeature.multiArrayValue,
+                  multiArray.dataType == .float32,
+                  multiArray.count == spec.embeddingDimension else {
                 throw ImageEncodingError.predictionError
             }
 
@@ -100,7 +106,7 @@ public struct ImgEncoder {
     /// All CoreML intermediates are scoped inside autoreleasepool to release
     /// Neural Engine IOSurface allocations promptly between batches.
     public func encodeBatch(images: [UIImage]) throws -> [MLShapedArray<Float32>] {
-        let targetSize = CGSize(width: 256, height: 256)
+        let targetSize = CGSize(width: spec.imageSize, height: spec.imageSize)
 
         var embeddings = [MLShapedArray<Float32>]()
         embeddings.reserveCapacity(images.count)
@@ -115,7 +121,7 @@ public struct ImgEncoder {
                 guard let buffer = Self.resizeAndConvertToBuffer(image: image, size: targetSize) else {
                     throw ImageEncodingError.bufferConversionError
                 }
-                let features = try MLDictionaryFeatureProvider(dictionary: ["colorImage": buffer])
+                let features = try MLDictionaryFeatureProvider(dictionary: [spec.imageInputName: buffer])
                 featureProviders.append(features)
             }
 
@@ -126,8 +132,10 @@ public struct ImgEncoder {
 
             for i in 0..<batchResults.count {
                 let result = batchResults.features(at: i)
-                guard let embeddingFeature = result.featureValue(for: "embOutput"),
-                      let multiArray = embeddingFeature.multiArrayValue else {
+                guard let embeddingFeature = result.featureValue(for: spec.imageOutputName),
+                      let multiArray = embeddingFeature.multiArrayValue,
+                      multiArray.dataType == .float32,
+                      multiArray.count == spec.embeddingDimension else {
                     throw ImageEncodingError.predictionError
                 }
                 embeddings.append(MLShapedArray<Float32>(converting: multiArray))
@@ -155,7 +163,7 @@ public struct ImgEncoder {
 
         // Get a recycled buffer from the pool (avoids IOSurface exhaustion during batch indexing)
         var pixelBuffer: CVPixelBuffer?
-        if let pool = bufferPool {
+        if size.width == 256, size.height == 256, let pool = bufferPool {
             let status = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer)
             guard status == kCVReturnSuccess, let buffer = pixelBuffer else { return nil }
             ciContext.render(outputImage, to: buffer)
