@@ -3,7 +3,7 @@
 //  Queryable
 //
 //  GPU-accelerated similarity search using MPSGraph matrix multiplication.
-//  Replaces per-embedding CPU cosine similarity with a single [N,512]×[512,1] GPU matmul.
+//  Replaces per-embedding CPU cosine similarity with a single [N,D]×[D,1] GPU matmul.
 //
 //  Performance strategy:
 //  - Pre-allocate MTLBuffer for the embedding matrix (avoids ~27MB copy per search)
@@ -43,7 +43,7 @@ class GPUSimilaritySearch {
         let n: Int
     }
 
-    init?(embeddingDimension: Int = 512) {
+    init?(embeddingDimension: Int) {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue(),
               embeddingDimension > 0 else {

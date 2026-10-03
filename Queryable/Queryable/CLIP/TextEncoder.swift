@@ -23,9 +23,19 @@ public struct TextEncoder {
          spec: EmbeddingModelSpec = .mobileCLIPS2,
          configuration config: MLModelConfiguration = .init()
     ) throws {
+        guard spec.tokenizerKind == .clipBPE,
+              let vocabularyName = spec.vocabularyName,
+              let mergesName = spec.mergesName else {
+            throw TextEncodingError.unsupportedTokenizer
+        }
+        guard spec.textInputType == .multiArrayFloat32,
+              spec.textOutputType == .multiArrayFloat32,
+              spec.imageOutputType == .multiArrayFloat32 else {
+            throw TextEncodingError.unsupportedFeatureType
+        }
         let textEncoderURL = baseURL.appending(path: spec.textModelName)
-        let vocabURL = baseURL.appending(path: spec.vocabularyName)
-        let mergesURL = baseURL.appending(path: spec.mergesName)
+        let vocabURL = baseURL.appending(path: vocabularyName)
+        let mergesURL = baseURL.appending(path: mergesName)
         
 #if os(iOS)
         // Fallback to CPU only to avoid NN compute error on iPhone < 11 and iPad < 9th gen
@@ -38,10 +48,8 @@ public struct TextEncoder {
         let tokenizer = try BPETokenizer(mergesAt: mergesURL, vocabularyAt: vocabURL)
         let textEncoderModel = try MLModel(contentsOf: textEncoderURL, configuration: config)
 
-        guard tokenizer.vocabulary.count == spec.vocabularySize,
-              let inputDescription = textEncoderModel.modelDescription.inputDescriptionsByName.first?.value,
-              let inputShape = inputDescription.multiArrayConstraint?.shape.map({ $0.intValue }),
-              inputShape.last == spec.contextLength else {
+        try spec.validate(textModel: textEncoderModel)
+        guard tokenizer.vocabulary.count == spec.vocabularySize else {
             throw TextEncodingError.modelContractMismatch
         }
 
@@ -117,10 +125,12 @@ public struct TextEncoder {
     enum TextEncodingError: Error {
         case modelContractMismatch
         case invalidOutput
+        case unsupportedTokenizer
+        case unsupportedFeatureType
     }
 
     var inputDescription: MLFeatureDescription {
-        model.modelDescription.inputDescriptionsByName.first!.value
+        model.modelDescription.inputDescriptionsByName[spec.textInputName]!
     }
 
     var inputShape: [Int] {

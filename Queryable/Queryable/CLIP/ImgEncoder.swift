@@ -62,8 +62,13 @@ public struct ImgEncoder {
          configuration config: MLModelConfiguration = .init()
     ) throws {
         self.spec = spec
+        guard spec.imageOutputType == .multiArrayFloat32 else {
+            throw ImageEncodingError.unsupportedFeatureType
+        }
+        try spec.validateImageRuntimePreprocessing()
         let imgEncoderURL = baseURL.appending(path: spec.imageModelName)
         let imgEncoderModel = try MLModel(contentsOf: imgEncoderURL, configuration: config)
+        try spec.validate(imageModel: imgEncoderModel)
         self.model = imgEncoderModel
     }
 
@@ -78,7 +83,11 @@ public struct ImgEncoder {
     public func encode(image: UIImage) async throws -> MLShapedArray<Float32> {
         do {
             let inputSize = CGSize(width: spec.imageSize, height: spec.imageSize)
-            guard let buffer = Self.resizeAndConvertToBuffer(image: image, size: inputSize) else {
+            guard let buffer = Self.resizeAndConvertToBuffer(
+                image: image,
+                size: inputSize,
+                preprocessing: spec.imagePreprocessing
+            ) else {
                 throw ImageEncodingError.bufferConversionError
             }
 
@@ -118,7 +127,11 @@ public struct ImgEncoder {
             featureProviders.reserveCapacity(images.count)
 
             for image in images {
-                guard let buffer = Self.resizeAndConvertToBuffer(image: image, size: targetSize) else {
+                guard let buffer = Self.resizeAndConvertToBuffer(
+                    image: image,
+                    size: targetSize,
+                    preprocessing: spec.imagePreprocessing
+                ) else {
                     throw ImageEncodingError.bufferConversionError
                 }
                 let features = try MLDictionaryFeatureProvider(dictionary: [spec.imageInputName: buffer])
@@ -147,14 +160,19 @@ public struct ImgEncoder {
 
     /// GPU-accelerated image resize using CoreImage CILanczosScaleTransform,
     /// then render directly to a pooled CVPixelBuffer.
-    private static func resizeAndConvertToBuffer(image: UIImage, size: CGSize) -> CVPixelBuffer? {
+    private static func resizeAndConvertToBuffer(
+        image: UIImage,
+        size: CGSize,
+        preprocessing: ImagePreprocessing
+    ) -> CVPixelBuffer? {
+        guard preprocessing.pixelFormat == "32ARGB" else { return nil }
         guard let cgImage = image.cgImage else { return nil }
 
         let ciImage = CIImage(cgImage: cgImage)
         let scaleX = size.width / ciImage.extent.width
         let scaleY = size.height / ciImage.extent.height
 
-        guard let filter = CIFilter(name: "CILanczosScaleTransform") else { return nil }
+        guard let filter = CIFilter(name: preprocessing.resizeFilter) else { return nil }
         filter.setValue(ciImage, forKey: kCIInputImageKey)
         filter.setValue(scaleY, forKey: kCIInputScaleKey)
         filter.setValue(scaleX / scaleY, forKey: kCIInputAspectRatioKey)
@@ -194,4 +212,5 @@ enum ImageEncodingError: Error {
     case bufferConversionError
     case featureProviderError
     case predictionError
+    case unsupportedFeatureType
 }

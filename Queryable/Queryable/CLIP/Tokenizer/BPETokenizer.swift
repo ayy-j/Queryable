@@ -48,7 +48,7 @@ public struct BPETokenizer {
     ///   - vocabularyURL: The URL of a JSON file containing the vocabulary.
     public init(mergesAt mergesURL: URL, vocabularyAt vocabularyURL: URL) throws {
         self.merges = try Self.readMerges(url: mergesURL)
-        self.vocabulary = try! Self.readVocabulary(url: vocabularyURL)
+        self.vocabulary = try Self.readVocabulary(url: vocabularyURL)
     }
 
     /// Tokenizes an input string.

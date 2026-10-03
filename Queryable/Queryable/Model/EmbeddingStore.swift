@@ -235,7 +235,7 @@ class EmbeddingStore: @unchecked Sendable {
             modelID: spec.modelID,
             checkpointHash: checkpointHash,
             dimension: spec.embeddingDimension,
-            scalarType: "float32",
+            scalarType: spec.storageScalarType.rawValue,
             preprocessingFingerprint: spec.preprocessingFingerprint,
             normalized: spec.normalizeEmbeddings
         )
@@ -270,7 +270,7 @@ class EmbeddingStore: @unchecked Sendable {
                 modelID: spec.modelID,
                 checkpointHash: checkpointHash,
                 dimension: spec.embeddingDimension,
-                scalarType: "float32",
+                scalarType: spec.storageScalarType.rawValue,
                 preprocessingFingerprint: spec.preprocessingFingerprint,
                 normalized: spec.normalizeEmbeddings
               ) else { return nil }
