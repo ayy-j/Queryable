@@ -25,9 +25,6 @@ class GPUSimilaritySearch {
     /// Photo IDs in the same order as rows in the embedding matrix
     private(set) var ids: [String] = []
 
-    /// Contiguous Float16 embedding data (CPU-side, used for add/remove)
-    private var embeddingData: [Float16] = []
-
     /// Pre-allocated GPU buffer for the embedding matrix
     private var matrixBuffer: MTLBuffer?
 
@@ -63,56 +60,29 @@ class GPUSimilaritySearch {
         try validate(embeddings)
         let startTime = Date()
         let n = embeddings.count
-
-        ids.removeAll()
-        ids.reserveCapacity(n)
-        embeddingData = [Float16](repeating: 0, count: n * embeddingDim)
-
-        // Reusable buffer for normalized Float32 values (one embedding at a time)
+        guard n > 0 else {
+            ids.removeAll()
+            matrixBuffer = nil
+            cachedGraph = nil
+            return
+        }
+        let newMatrixBuffer = try makeMatrixBuffer(embeddingCount: n)
+        let destination = newMatrixBuffer.contents().assumingMemoryBound(to: Float16.self)
         var normalizedBuf = [Float32](repeating: 0, count: embeddingDim)
-
-        var i = 0
-        for (id, mlArray) in embeddings {
-            ids.append(id)
-            let offset = i * embeddingDim
-
-            // Zero-copy pointer into MLMultiArray's backing store
-            let srcPtr = mlArray.dataPointer.assumingMemoryBound(to: Float32.self)
-
-            // Vectorized L2 norm
-            var sumSq: Float32 = 0
-            vDSP_svesq(srcPtr, 1, &sumSq, vDSP_Length(embeddingDim))
-            let norm = sqrt(sumSq)
-
-            if norm > 1e-8 {
-                var invNorm = 1.0 / norm
-                vDSP_vsmul(srcPtr, 1, &invNorm, &normalizedBuf, 1, vDSP_Length(embeddingDim))
-
-                // Bulk Float32 → Float16 conversion via Accelerate
-                normalizedBuf.withUnsafeBufferPointer { srcBuf in
-                    embeddingData.withUnsafeMutableBufferPointer { dstBuf in
-                        var srcBuffer = vImage_Buffer(
-                            data: UnsafeMutableRawPointer(mutating: srcBuf.baseAddress!),
-                            height: 1,
-                            width: vImagePixelCount(embeddingDim),
-                            rowBytes: embeddingDim * MemoryLayout<Float32>.size
-                        )
-                        var dstBuffer = vImage_Buffer(
-                            data: UnsafeMutableRawPointer(dstBuf.baseAddress! + offset),
-                            height: 1,
-                            width: vImagePixelCount(embeddingDim),
-                            rowBytes: embeddingDim * MemoryLayout<Float16>.size
-                        )
-                        vImageConvert_PlanarFtoPlanar16F(&srcBuffer, &dstBuffer, 0)
-                    }
-                }
-            }
-
-            i += 1
+        var newIDs = [String]()
+        newIDs.reserveCapacity(n)
+        for (row, (id, mlArray)) in embeddings.enumerated() {
+            newIDs.append(id)
+            writeNormalizedEmbedding(
+                mlArray,
+                to: destination.advanced(by: row * embeddingDim),
+                using: &normalizedBuf
+            )
         }
 
-        // Pre-allocate GPU buffer and build cached graph
-        uploadToGPU()
+        ids = newIDs
+        matrixBuffer = newMatrixBuffer
+        rebuildGraph()
 
         print("[GPUSearch] Built index: \(n) embeddings in \(String(format: "%.3f", Date().timeIntervalSince(startTime)))s")
     }
@@ -120,84 +90,134 @@ class GPUSimilaritySearch {
     /// Add new embeddings to the existing index.
     func addEmbeddings(_ newEmbeddings: [String: MLMultiArray]) throws {
         try validate(newEmbeddings)
-        var normalizedBuf = [Float32](repeating: 0, count: embeddingDim)
-
-        for (id, mlArray) in newEmbeddings {
-            let srcPtr = mlArray.dataPointer.assumingMemoryBound(to: Float32.self)
-
-            var sumSq: Float32 = 0
-            vDSP_svesq(srcPtr, 1, &sumSq, vDSP_Length(embeddingDim))
-            let norm = sqrt(sumSq)
-
-            var normalized = [Float16](repeating: 0, count: embeddingDim)
-            if norm > 1e-8 {
-                var invNorm = 1.0 / norm
-                vDSP_vsmul(srcPtr, 1, &invNorm, &normalizedBuf, 1, vDSP_Length(embeddingDim))
-
-                normalizedBuf.withUnsafeBufferPointer { srcBuf in
-                    normalized.withUnsafeMutableBufferPointer { dstBuf in
-                        var srcBuffer = vImage_Buffer(
-                            data: UnsafeMutableRawPointer(mutating: srcBuf.baseAddress!),
-                            height: 1,
-                            width: vImagePixelCount(embeddingDim),
-                            rowBytes: embeddingDim * MemoryLayout<Float32>.size
-                        )
-                        var dstBuffer = vImage_Buffer(
-                            data: UnsafeMutableRawPointer(dstBuf.baseAddress!),
-                            height: 1,
-                            width: vImagePixelCount(embeddingDim),
-                            rowBytes: embeddingDim * MemoryLayout<Float16>.size
-                        )
-                        vImageConvert_PlanarFtoPlanar16F(&srcBuffer, &dstBuffer, 0)
-                    }
-                }
-            }
-
-            ids.append(id)
-            embeddingData.append(contentsOf: normalized)
+        guard !newEmbeddings.isEmpty else { return }
+        let (newCount, countOverflow) = ids.count.addingReportingOverflow(newEmbeddings.count)
+        guard !countOverflow else { throw SimilaritySearchError.bufferAllocationFailed }
+        let newMatrixBuffer = try makeMatrixBuffer(embeddingCount: newCount)
+        let destination = newMatrixBuffer.contents().assumingMemoryBound(to: Float16.self)
+        if let matrixBuffer, !ids.isEmpty {
+            let source = matrixBuffer.contents().assumingMemoryBound(to: Float16.self)
+            destination.update(from: source, count: ids.count * embeddingDim)
         }
 
-        uploadToGPU()
+        var normalizedBuf = [Float32](repeating: 0, count: embeddingDim)
+        var newIDs = ids
+        newIDs.reserveCapacity(newCount)
+        for (id, mlArray) in newEmbeddings {
+            let row = newIDs.count
+            newIDs.append(id)
+            writeNormalizedEmbedding(
+                mlArray,
+                to: destination.advanced(by: row * embeddingDim),
+                using: &normalizedBuf
+            )
+        }
+
+        ids = newIDs
+        matrixBuffer = newMatrixBuffer
+        rebuildGraph()
     }
 
-    /// Remove embeddings by their IDs. Rebuilds the contiguous array.
+    /// Remove embeddings by their IDs, copying retained rows directly between Metal buffers.
     func removeEmbeddings(_ idsToRemove: Set<String>) {
         guard !idsToRemove.isEmpty else { return }
 
+        let retainedCount = ids.reduce(into: 0) { count, id in
+            if !idsToRemove.contains(id) { count += 1 }
+        }
         var newIds = [String]()
-        newIds.reserveCapacity(ids.count - idsToRemove.count)
-        var newData = [Float16]()
-        newData.reserveCapacity((ids.count - idsToRemove.count) * embeddingDim)
+        newIds.reserveCapacity(retainedCount)
+        guard retainedCount > 0 else {
+            ids.removeAll()
+            matrixBuffer = nil
+            cachedGraph = nil
+            return
+        }
+        guard let newMatrixBuffer = try? makeMatrixBuffer(embeddingCount: retainedCount),
+              let oldMatrixBuffer = matrixBuffer else {
+            ids.removeAll()
+            matrixBuffer = nil
+            cachedGraph = nil
+            return
+        }
+        let source = oldMatrixBuffer.contents().assumingMemoryBound(to: Float16.self)
+        let destination = newMatrixBuffer.contents().assumingMemoryBound(to: Float16.self)
 
+        var destinationRow = 0
         for (i, id) in ids.enumerated() {
             if !idsToRemove.contains(id) {
                 newIds.append(id)
-                let offset = i * embeddingDim
-                newData.append(contentsOf: embeddingData[offset..<(offset + embeddingDim)])
+                let sourceOffset = i * embeddingDim
+                let destinationOffset = destinationRow * embeddingDim
+                destination.advanced(by: destinationOffset)
+                    .update(from: source.advanced(by: sourceOffset), count: embeddingDim)
+                destinationRow += 1
             }
         }
 
-        self.ids = newIds
-        self.embeddingData = newData
-
-        uploadToGPU()
+        ids = newIds
+        matrixBuffer = newMatrixBuffer
+        rebuildGraph()
     }
 
     // MARK: - GPU Buffer Management
 
-    /// Upload embedding data to a persistent MTLBuffer and build the cached graph.
-    private func uploadToGPU() {
+    private func makeMatrixBuffer(embeddingCount: Int) throws -> MTLBuffer {
+        let (elementCount, elementOverflow) = embeddingCount.multipliedReportingOverflow(by: embeddingDim)
+        let (byteCount, byteOverflow) = elementCount.multipliedReportingOverflow(by: MemoryLayout<Float16>.size)
+        guard !elementOverflow, !byteOverflow,
+              let buffer = device.makeBuffer(length: byteCount, options: .storageModeShared) else {
+            throw SimilaritySearchError.bufferAllocationFailed
+        }
+        return buffer
+    }
+
+    private func writeNormalizedEmbedding(
+        _ embedding: MLMultiArray,
+        to destination: UnsafeMutablePointer<Float16>,
+        using normalizedBuffer: inout [Float32]
+    ) {
+        let source = embedding.dataPointer.assumingMemoryBound(to: Float32.self)
+        var sumSquares: Float32 = 0
+        vDSP_svesq(source, 1, &sumSquares, vDSP_Length(embeddingDim))
+        let norm = sqrt(sumSquares)
+
+        if norm > 1e-8 {
+            var inverseNorm = 1.0 / norm
+            vDSP_vsmul(source, 1, &inverseNorm, &normalizedBuffer, 1, vDSP_Length(embeddingDim))
+            normalizedBuffer.withUnsafeBufferPointer { sourceBuffer in
+                var sourceImage = vImage_Buffer(
+                    data: UnsafeMutableRawPointer(mutating: sourceBuffer.baseAddress!),
+                    height: 1,
+                    width: vImagePixelCount(embeddingDim),
+                    rowBytes: embeddingDim * MemoryLayout<Float32>.size
+                )
+                var destinationImage = vImage_Buffer(
+                    data: UnsafeMutableRawPointer(destination),
+                    height: 1,
+                    width: vImagePixelCount(embeddingDim),
+                    rowBytes: embeddingDim * MemoryLayout<Float16>.size
+                )
+                vImageConvert_PlanarFtoPlanar16F(&sourceImage, &destinationImage, 0)
+            }
+        } else {
+            for index in 0..<embeddingDim {
+                destination[index] = 0
+            }
+        }
+    }
+
+    /// Build the cached graph for the current Metal buffer.
+    private func rebuildGraph() {
         let n = ids.count
         guard n > 0 else {
             matrixBuffer = nil
             cachedGraph = nil
             return
         }
-
-        let byteCount = n * embeddingDim * MemoryLayout<Float16>.size
-
-        matrixBuffer = embeddingData.withUnsafeBufferPointer { ptr in
-            device.makeBuffer(bytes: ptr.baseAddress!, length: byteCount, options: .storageModeShared)
+        guard matrixBuffer != nil else {
+            cachedGraph = nil
+            return
         }
 
         // Build and cache the MPSGraph for this matrix size
@@ -307,4 +327,5 @@ class GPUSimilaritySearch {
 enum SimilaritySearchError: Error {
     case dimensionMismatch(expected: Int, actual: Int)
     case invalidEmbedding(id: String, expected: Int, actual: Int)
+    case bufferAllocationFailed
 }

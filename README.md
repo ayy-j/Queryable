@@ -49,6 +49,8 @@ The app keeps MobileCLIP-S2 as its default until the S4 artifacts and rollout ga
 
 Embedding indexes are stored separately per model and checkpoint fingerprint in QEMB v2 files. Each header identifies the model, a SHA-256 fingerprint of its towers and tokenizer assets, vector dimension and scalar type, preprocessing fingerprint, normalization state, and record count. Untagged legacy indexes and indexes with incompatible metadata are rejected and must be rebuilt because their checkpoint identity cannot be verified. Review model checkpoint terms and distribution rights before bundling or distributing any model artifacts.
 
+QEMB records are streamed during loading and compaction, and the Float16 GPU index is built directly in its shared Metal buffer instead of retaining a second CPU-side copy. Persistent vectors remain Float32 until retrieval parity and storage benchmarks justify a lower-precision format.
+
 ## Core ML Export
 
 > If you only want to run Queryable, you can **skip this step** and directly use the exported model from [Google Drive](https://drive.google.com/drive/folders/12ze3UcqrXt9qeySGh_j_zWE-PWRDTzJv?usp=drive_link). If you wish to implement Queryable that supports your own native language, or do some model quantization/acceleration work, here are some guidelines.
