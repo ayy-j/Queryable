@@ -1,4 +1,6 @@
 import XCTest
+import CoreVideo
+import CoreGraphics
 @testable import Queryable
 
 final class EmbeddingModelSpecTests: XCTestCase {
@@ -85,6 +87,30 @@ final class EmbeddingModelSpecTests: XCTestCase {
 
         XCTAssertEqual(registry.spec(for: "mobileclip-s2"), .mobileCLIPS2)
         XCTAssertNil(registry.spec(for: "mobileclip2-s4"))
+    }
+
+    func testImageBufferPoolsMatchEachModelResolution() {
+        let resolutions = [256, 384]
+
+        for resolution in resolutions {
+            let size = CGSize(width: resolution, height: resolution)
+            guard let pool = ImgEncoder.pixelBufferPool(
+                size: size,
+                pixelFormat: kCVPixelFormatType_32ARGB
+            ) else {
+                XCTFail("Could not create a pixel buffer pool for \(resolution)x\(resolution)")
+                continue
+            }
+
+            var pixelBuffer: CVPixelBuffer?
+            guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer) == kCVReturnSuccess,
+                  let pixelBuffer else {
+                XCTFail("Could not allocate a \(resolution)x\(resolution) pixel buffer")
+                continue
+            }
+            XCTAssertEqual(CVPixelBufferGetWidth(pixelBuffer), resolution)
+            XCTAssertEqual(CVPixelBufferGetHeight(pixelBuffer), resolution)
+        }
     }
 
     func testS4ContractCanBeDescribedForArtifactGatedRegistration() throws {
