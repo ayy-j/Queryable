@@ -17,6 +17,12 @@ import Foundation
 import CoreML
 import Accelerate
 
+enum EmbeddingStoreError: Error {
+    case notReady
+    case writeFailed
+    case metadataTooLarge
+}
+
 /// @unchecked Sendable: all stored properties are immutable after init (let).
 /// loadAll() is a pure reader that returns a fresh dictionary with no shared mutable state,
 /// so it is safe to call from a detached Task. Write methods (appendNew, markDeleted, etc.)
@@ -240,7 +246,7 @@ class EmbeddingStore: @unchecked Sendable {
             normalized: spec.normalizeEmbeddings
         )
         let metadataData = try JSONEncoder().encode(metadata)
-        guard metadataData.count <= Int(UInt32.max) else { throw CocoaError(.fileWriteTooLarge) }
+        guard metadataData.count <= Int(UInt32.max) else { throw EmbeddingStoreError.metadataTooLarge }
 
         var data = Data(headerMagic)
         var version = formatVersion

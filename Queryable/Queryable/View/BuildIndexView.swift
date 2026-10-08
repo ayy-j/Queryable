@@ -39,6 +39,8 @@ struct BuildIndexView: View {
                         UIApplication.shared.isIdleTimerDisabled = false
                     }
                 }
+        case .MODEL_ERROR:
+            ModelErrorView(photoSearcher: photoSearcher)
         case .BUILD_FINISHED:
             BuildFinishView(photoSearcher: photoSearcher)
         default:
@@ -124,8 +126,25 @@ struct BuildingIndexView: View {
 }
 
 
-struct BuildFinishView: View {
-    @Environment(\.presentationMode) var presentationMode
+struct ModelErrorView: View {
+    @ObservedObject var photoSearcher: PhotoSearcher
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Label("Model files missing", systemImage: "exclamationmark.triangle")
+                .font(.title2)
+                .fontWeight(.semibold)
+            Text(photoSearcher.modelErrorMessage ?? "The Core ML model files could not be loaded.")
+                .foregroundColor(.gray)
+                .multilineTextAlignment(.center)
+                .padding([.leading, .trailing])
+        }
+        .padding()
+    }
+}
+
+
+struct BuildFinishView: View {    @Environment(\.presentationMode) var presentationMode
     @Environment(\.colorScheme) var colorScheme
     @ObservedObject var photoSearcher: PhotoSearcher
     

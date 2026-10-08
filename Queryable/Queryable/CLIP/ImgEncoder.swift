@@ -66,6 +66,10 @@ public struct ImgEncoder {
             throw ImageEncodingError.unsupportedFeatureType
         }
         try spec.validateImageRuntimePreprocessing()
+        let missing = spec.missingArtifacts(resourcesAt: baseURL)
+        if let firstMissing = missing.first {
+            throw ModelArtifactError.missingArtifact(firstMissing)
+        }
         let imgEncoderURL = baseURL.appending(path: spec.imageModelName)
         let imgEncoderModel = try MLModel(contentsOf: imgEncoderURL, configuration: config)
         try spec.validate(imageModel: imgEncoderModel)
