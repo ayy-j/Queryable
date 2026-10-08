@@ -9,6 +9,9 @@ import os.log
 final class DataModel: ObservableObject {
 //    let camera = Camera()
     let photoCollection = PhotoCollection(smartAlbum: .smartAlbumUserLibrary)
+
+    /// The embedding model whose input resolution previews should match.
+    var modelSpec: EmbeddingModelSpec = .mobileCLIPS2
     
     @Published var viewfinderImage: Image?
     @Published var thumbnailImage: UIImage?
@@ -96,7 +99,8 @@ final class DataModel: ObservableObject {
     
     func loadThumbnail() async {
         guard let asset = photoCollection.photoAssets.first  else { return }
-        await photoCollection.cache.requestImage(for: asset, targetSize: CGSize(width: 256, height: 256)) { result in
+        let targetSize = CGSize(width: modelSpec.imageSize, height: modelSpec.imageSize)
+        await photoCollection.cache.requestImage(for: asset, targetSize: targetSize) { result in
             if let result = result {
                 Task { @MainActor in
                     self.thumbnailImage = result.image
