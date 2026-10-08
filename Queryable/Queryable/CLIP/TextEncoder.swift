@@ -33,6 +33,10 @@ public struct TextEncoder {
               spec.imageOutputType == .multiArrayFloat32 else {
             throw TextEncodingError.unsupportedFeatureType
         }
+        let missing = spec.missingArtifacts(resourcesAt: baseURL)
+        if let firstMissing = missing.first {
+            throw ModelArtifactError.missingArtifact(firstMissing)
+        }
         let textEncoderURL = baseURL.appending(path: spec.textModelName)
         let vocabURL = baseURL.appending(path: vocabularyName)
         let mergesURL = baseURL.appending(path: mergesName)
