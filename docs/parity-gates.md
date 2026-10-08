@@ -1,0 +1,92 @@
+# Parity gates (issue #5)
+
+## Purpose
+
+Detect conversion, preprocessing, tokenizer, and precision errors
+independently of retrieval-quality benchmarks (issue #6). Every Core ML
+release — S4 (#16), So400m (#21) — must pass the applicable gate before the
+release decisions in #18/#19. Published ImageNet scores are not evidence.
+
+## What exists now
+
+| Artifact | Path | Status |
+|---|---|---|
+| Metrics + tolerances + gate (`ParityMetrics`, `ParityGate`) | `Queryable/Queryable/Parity/ParityMetrics.swift` | Implemented |
+| Fixture/report schemas (`ParityFixtureManifest`, `TokenFixtureFile`, `VectorFixtureFile`, `ParityReport`) | `Queryable/Queryable/Parity/ParityFixture.swift` | Implemented |
+| CLIP BPE golden token IDs (11 cases, generated from bundled `vocab.json`/`merges.txt`) | `Queryable/ParityFixtures/clip-bpe-tokens-v1.json` | Implemented |
+| Gate tests (metrics, tolerances, golden token-ID match) | `Queryable/QueryableTests/ParityMetricsTests.swift` | Implemented |
+| PyTorch reference generator (pinned contracts, provenance) | `tools/generate_parity_reference.py` | Schema stub; real export lands with #16/#21 |
+| Token fixture generator | `tools/gen_token_fixtures.swift` | Implemented |
+
+## Tolerances (declared before measurement, not tuned after)
+
+| ID | Use | Max cosine distance | Min rank correlation | Norm tolerance |
+|---|---|---|---|---|
+| `fp32` | FP32 reference vs FP32 Core ML | 1e-4 | 0.999 | 1e-3 |
+| `fp16` | FP16 Core ML vs FP32 PyTorch reference | 5e-3 | 0.99 | 1e-2 |
+
+The FP16 row allows for the image-encoder precision error noted in
+README.md. The S2 baseline parity report must measure and explain the
+observed difference rather than silently ignoring it.
+
+## Tokenizer fixtures
+
+`clip-bpe-tokens-v1.json` covers empty input, single/two words,
+punctuation, Unicode diacritics, emoji, whitespace normalization, a long
+description, max-length truncation (77-token context), OCR-like input, and
+an unpadded case. Token IDs must match exactly — no fuzzy matching, no
+silent fallback to another tokenizer.
+
+Regenerate after any tokenizer asset change:
+
+```sh
+mkdir -p /tmp/genpkg
+cp Queryable/Queryable/CLIP/Tokenizer/BPETokenizer.swift \
+   Queryable/Queryable/CLIP/Tokenizer/BPETokenizer+Reading.swift /tmp/genpkg/
+cp tools/gen_token_fixtures.swift /tmp/genpkg/main.swift
+swiftc -o /tmp/gen_tokens /tmp/genpkg/BPETokenizer.swift \
+  "/tmp/genpkg/BPETokenizer+Reading.swift" /tmp/genpkg/main.swift
+/tmp/gen_tokens
+```
+
+## Vector fixtures
+
+Reference image/text vectors come from pinned PyTorch code, checkpoint
+hashes, preprocessing, normalization, and tokenizer assets:
+
+```sh
+python3 tools/generate_parity_reference.py \
+  --model mobileclip-s2 \
+  --checkpoint /path/to/checkpoint.pt \
+  --out Queryable/ParityFixtures/mobileclip-s2-vectors-v1.json
+```
+
+Without `--checkpoint` the script emits an all-zero schema placeholder and
+exits non-zero so CI fails loudly instead of passing silently. Real
+`encode_image`/`encode_text` export calls land with #16 (S4) and #21
+(So400m); each model gets independently versioned fixtures.
+
+## Running the gate
+
+```sh
+# Simulator (no signing required):
+DEVELOPER_DIR=/Applications/Xcode-27.0.0.app/Contents/Developer \
+xcodebuild test \
+  -project Queryable/Queryable.xcodeproj \
+  -scheme Queryable \
+  -destination 'platform=iOS Simulator,name=iPhone 17' \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+The gate compares Swift/Core ML outputs against reference fixtures on
+shapes, finite values, L2 norm, cosine agreement, and retrieval rank
+correlation, and writes a `ParityReport` identifying fixture version,
+artifact checksums, tolerances, runtime versions, and device/backend.
+Core ML releases cannot pass without the applicable parity report.
+
+## Storage boundaries
+
+Fixture files contain only prompts and vectors — no private photos, queries,
+or identifiable library metadata. Private benchmark data stays private per
+issue #1. Public documentation contains methodology and aggregate results
+only.
