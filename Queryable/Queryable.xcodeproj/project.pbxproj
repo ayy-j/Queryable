@@ -15,6 +15,9 @@
 		94E917B32A5A475B00324937 /* BPETokenizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E917902A5A475B00324937 /* BPETokenizer.swift */; };
 		94E917B42A5A475B00324937 /* BPETokenizer+Reading.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E917912A5A475B00324937 /* BPETokenizer+Reading.swift */; };
 		94E917B52A5A475B00324937 /* Embedding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E917932A5A475B00324937 /* Embedding.swift */; };
+		PA0000022A5A475B00324937 /* ParityMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = PA0000012A5A475B00324937 /* ParityMetrics.swift */; };
+		PA0000042A5A475B00324937 /* ParityFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = PA0000032A5A475B00324937 /* ParityFixture.swift */; };
+		PA0000072AECD3CF007AB439 /* ParityMetricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PA0000062AECD3CF007AB439 /* ParityMetricsTests.swift */; };
 		94E917B72A5A475B00324937 /* PhotoSearchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E917952A5A475B00324937 /* PhotoSearchModel.swift */; };
 		C1A000022C8F000000000001 /* GPUSimilaritySearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A000012C8F000000000001 /* GPUSimilaritySearch.swift */; };
 		C1A000042C8F000000000001 /* EmbeddingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A000032C8F000000000001 /* EmbeddingStore.swift */; };
@@ -104,6 +107,9 @@
 		DE4D62592AECD3CF007AB439 /* FeedbackItemView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackItemView.swift; sourceTree = "<group>"; };
 		DE4D62612AECD3CF007AB439 /* EmbeddingModelSpecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddingModelSpecTests.swift; sourceTree = "<group>"; };
 		DE4D62632AECD3CF007AB439 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = Developer/Library/Frameworks/XCTest.framework; sourceTree = DEVELOPER_DIR; };
+		PA0000012A5A475B00324937 /* ParityMetrics.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ParityMetrics.swift; sourceTree = "<group>"; };
+		PA0000032A5A475B00324937 /* ParityFixture.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = ParityFixture.swift; sourceTree = "<group>"; };
+		PA0000062AECD3CF007AB439 /* ParityMetricsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityMetricsTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -154,6 +160,7 @@
 				4D3B1D632A5F95300004C06F /* CoreMLModels */,
 				94E9178C2A5A475B00324937 /* CLIP */,
 				94E917922A5A475B00324937 /* Model */,
+				PA0000052A5A475B00324937 /* Parity */,
 				94E917962A5A475B00324937 /* PhotoHelper */,
 				94E9179D2A5A475B00324937 /* View */,
 				94E917AF2A5A475B00324937 /* ViewModel */,
@@ -168,6 +175,7 @@
 			isa = PBXGroup;
 			children = (
 				DE4D62612AECD3CF007AB439 /* EmbeddingModelSpecTests.swift */,
+				PA0000062AECD3CF007AB439 /* ParityMetricsTests.swift */,
 			);
 			path = QueryableTests;
 			sourceTree = "<group>";
@@ -197,6 +205,15 @@
 				94E917912A5A475B00324937 /* BPETokenizer+Reading.swift */,
 			);
 			path = Tokenizer;
+			sourceTree = "<group>";
+		};
+		PA0000052A5A475B00324937 /* Parity */ = {
+			isa = PBXGroup;
+			children = (
+				PA0000012A5A475B00324937 /* ParityMetrics.swift */,
+				PA0000032A5A475B00324937 /* ParityFixture.swift */,
+			);
+			path = Parity;
 			sourceTree = "<group>";
 		};
 		94E917922A5A475B00324937 /* Model */ = {
@@ -439,6 +456,8 @@
 				94E917B92A5A475B00324937 /* PhotoAssetCollection.swift in Sources */,
 				94E917B22A5A475B00324937 /* ImgEncoder.swift in Sources */,
 				94E917B52A5A475B00324937 /* Embedding.swift in Sources */,
+				PA0000022A5A475B00324937 /* ParityMetrics.swift in Sources */,
+				PA0000042A5A475B00324937 /* ParityFixture.swift in Sources */,
 				94E917BD2A5A475B00324937 /* PhotoLibrary.swift in Sources */,
 				94E917C92A5A475B00324937 /* ConfigView.swift in Sources */,
 				94E917BF2A5A475B00324937 /* SimilarPhotoCollectionView.swift in Sources */,
@@ -466,6 +485,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				DE4D62602AECD3CF007AB439 /* EmbeddingModelSpecTests.swift in Sources */,
+				PA0000072AECD3CF007AB439 /* ParityMetricsTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
