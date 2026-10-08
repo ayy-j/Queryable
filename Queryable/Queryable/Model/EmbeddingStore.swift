@@ -18,9 +18,12 @@ import CoreML
 import Accelerate
 
 enum EmbeddingStoreError: Error {
+    /// The store has not been created for the active model spec yet.
     case notReady
+    /// The append-only journal could not accept the new embeddings.
     case writeFailed
-    case metadataTooLarge
+    /// The header metadata does not fit the on-disk length field.
+    case metadataTooLarge(Int)
 }
 
 /// @unchecked Sendable: all stored properties are immutable after init (let).
@@ -246,7 +249,7 @@ class EmbeddingStore: @unchecked Sendable {
             normalized: spec.normalizeEmbeddings
         )
         let metadataData = try JSONEncoder().encode(metadata)
-        guard metadataData.count <= Int(UInt32.max) else { throw EmbeddingStoreError.metadataTooLarge }
+        guard metadataData.count <= Int(UInt32.max) else { throw EmbeddingStoreError.metadataTooLarge(metadataData.count) }
 
         var data = Data(headerMagic)
         var version = formatVersion
