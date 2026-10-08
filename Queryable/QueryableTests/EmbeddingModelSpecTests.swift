@@ -96,6 +96,37 @@ final class EmbeddingModelSpecTests: XCTestCase {
         XCTAssertEqual(s4.tokenizerKind, .clipBPE)
     }
 
+    func testMissingArtifactsReportsAbsentModelBundles() throws {
+        let fileManager = FileManager.default
+        let dir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: dir) }
+
+        let spec = try makeSpec()
+        XCTAssertEqual(
+            spec.missingArtifacts(resourcesAt: dir),
+            ["image.mlmodelc", "text.mlmodelc", "vocab.json", "merges.txt"]
+        )
+
+        // Tokenizer assets present, compiled towers still missing (fresh-checkout state).
+        try "v".write(to: dir.appendingPathComponent("vocab.json"), atomically: true, encoding: .utf8)
+        try "m".write(to: dir.appendingPathComponent("merges.txt"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(
+            spec.missingArtifacts(resourcesAt: dir),
+            ["image.mlmodelc", "text.mlmodelc"]
+        )
+
+        try fileManager.createDirectory(at: dir.appendingPathComponent("image.mlmodelc"), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: dir.appendingPathComponent("text.mlmodelc"), withIntermediateDirectories: true)
+        XCTAssertTrue(spec.missingArtifacts(resourcesAt: dir).isEmpty)
+    }
+
+    func testMissingArtifactErrorDescribesDownloadRemedy() {
+        let message = ModelArtifactError.missingArtifact("ImageEncoder_mobileCLIP_s2.mlmodelc").localizedDescription
+        XCTAssertTrue(message.contains("ImageEncoder_mobileCLIP_s2.mlmodelc"))
+        XCTAssertTrue(message.contains("drive.google.com"))
+    }
+
     private func makeSpec(
         modelID: String = "test-model",
         revision: String = "v1",

@@ -95,16 +95,25 @@ struct SearchResultsView: View {
 
 struct FirstTimeSearchView: View {
     @ObservedObject var photoSearcher: PhotoSearcher
-    
+
     var body: some View {
         VStack {
             VStack {
-                
-                TipsView(photoSearcher: photoSearcher)
+                if let message = photoSearcher.modelErrorMessage {
+                    Label("Model files missing", systemImage: "exclamationmark.triangle")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text(message)
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.center)
+                        .padding([.leading, .trailing])
+                } else {
+                    TipsView(photoSearcher: photoSearcher)
+                }
                 Spacer(minLength: 100)
-                
+
             }
-            
+
         }
         .padding(.top, -UIScreen.main.bounds.height * 0.32)
     }

@@ -149,6 +149,23 @@ struct EmbeddingModelSpec: Equatable, Sendable {
     var vocabularyName: String? { tokenizerAssets.first }
     var mergesName: String? { tokenizerKind == .clipBPE ? tokenizerAssets.last : nil }
 
+    /// All on-disk artifacts this spec needs, in a stable order.
+    var requiredArtifactNames: [String] {
+        [imageModelName, textModelName] + tokenizerAssets
+    }
+
+    /// Names of required artifacts absent at `baseURL` (the bundled `CoreMLModels` dir).
+    /// Compiled `.mlmodelc` bundles are git-ignored (see `.gitignore`), so a fresh
+    /// checkout/bundle contains only the tokenizer assets until the models are
+    /// downloaded manually. Callers should check this before `MLModel(contentsOf:)`,
+    /// whose "model is not found at URL" error does not explain the missing step.
+    func missingArtifacts(resourcesAt baseURL: URL) -> [String] {
+        let fileManager = FileManager.default
+        return requiredArtifactNames.filter { name in
+            !fileManager.fileExists(atPath: baseURL.appendingPathComponent(name).path)
+        }
+    }
+
     var compatibilityIdentity: String {
         var components = [
             modelID, revision, imageModelName, textModelName,
@@ -383,6 +400,21 @@ enum EmbeddingModelRegistryError: Error {
 enum ModelArtifactError: Error {
     case missingArtifact(String)
     case unreadableArtifact(String)
+}
+
+extension ModelArtifactError: LocalizedError {
+    static var modelDownloadURL: String {
+        "https://drive.google.com/drive/folders/12ze3UcqrXt9qeySGh_j_zWE-PWRDTzJv?usp=drive_link"
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case .missingArtifact(let name):
+            return "Missing model file “\(name)”. Download it from \(Self.modelDownloadURL) and place it in the app’s CoreMLModels folder, then rebuild."
+        case .unreadableArtifact(let name):
+            return "Model file “\(name)” exists but could not be read. Re-download it from \(Self.modelDownloadURL) and rebuild."
+        }
+    }
 }
 
 class Embedding: NSObject, NSSecureCoding {

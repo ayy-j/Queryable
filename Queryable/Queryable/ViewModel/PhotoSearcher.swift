@@ -26,6 +26,7 @@ enum BUILD_INDEX_CODE: Int {
     case LOADING_PHOTOS      = -2
     case PHOTOS_LOADED       = -1
     case LOADING_MODEL       = 0
+    case MODEL_ERROR         = 1
     case IS_BUILDING_INDEX   = 2
     case BUILD_FINISHED      = 3
 }
@@ -42,6 +43,8 @@ class PhotoSearcher: ObservableObject {
     // -3: default, -2: Is searching now, -1: Never indexed. 0: No result. 1: Has result.
     @Published var searchResultCode: SEARCH_RESULT_CODE = .DEFAULT
     @Published var buildIndexCode: BUILD_INDEX_CODE = .DEFAULT
+    /// Actionable message when model files are missing/unreadable; nil otherwise.
+    @Published var modelErrorMessage: String? = nil
     @Published var totalUnIndexedPhotosNum: Int = -1
     @Published var curIndexingNums: Int = -1
     @Published var curShowingPhoto: UIImage = UIImage(systemName: "photo")!
@@ -93,8 +96,10 @@ class PhotoSearcher: ObservableObject {
         print("Cache cleared.")
 
         self.searchResultCode = .DEFAULT
+        self.modelErrorMessage = nil
         guard let path = Bundle.main.path(forResource: "CoreMLModels", ofType: nil, inDirectory: nil) else {
             logger.error("Failed to find the CoreML models.")
+            self.modelErrorMessage = ModelArtifactError.missingArtifact("CoreMLModels").localizedDescription
             self.searchResultCode = .NEVER_INDEXED
             return
         }
@@ -111,6 +116,9 @@ class PhotoSearcher: ObservableObject {
             self.embeddingStore = store
         } catch {
             logger.error("Failed to load model contract: \(error.localizedDescription)")
+            if let artifactError = error as? ModelArtifactError {
+                self.modelErrorMessage = artifactError.localizedDescription
+            }
             self.searchResultCode = .NEVER_INDEXED
             return
         }
@@ -182,8 +190,12 @@ class PhotoSearcher: ObservableObject {
 
     func loadImageIncoder() async {
         self.buildIndexCode = .LOADING_MODEL
+        self.modelErrorMessage = nil
         guard let path = Bundle.main.path(forResource: "CoreMLModels", ofType: nil, inDirectory: nil) else {
-            fatalError("Fatal error: failed to find the CoreML models.")
+            logger.error("Failed to find the CoreML models.")
+            self.modelErrorMessage = ModelArtifactError.missingArtifact("CoreMLModels").localizedDescription
+            self.buildIndexCode = .MODEL_ERROR
+            return
         }
         let resourceURL = URL(fileURLWithPath: path)
 
@@ -195,6 +207,8 @@ class PhotoSearcher: ObservableObject {
             self.buildIndexCode = .IS_BUILDING_INDEX
         } catch let error {
             logger.error("Failed to load model: \(error.localizedDescription)")
+            self.modelErrorMessage = (error as? ModelArtifactError)?.localizedDescription ?? error.localizedDescription
+            self.buildIndexCode = .MODEL_ERROR
         }
     }
 
