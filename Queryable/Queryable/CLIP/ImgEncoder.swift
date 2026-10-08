@@ -17,28 +17,64 @@ public struct ImgEncoder {
     /// Shared CIContext for GPU-accelerated image processing
     private static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
-    /// Shared pixel buffer pool to recycle IOSurface-backed buffers (prevents hitting the 16384 limit)
-    private static var bufferPool: CVPixelBufferPool? = {
+    private struct BufferPoolKey: Hashable {
+        let width: Int
+        let height: Int
+        let pixelFormat: OSType
+    }
+
+    private static let bufferPoolLock = NSLock()
+    private static var bufferPools = [BufferPoolKey: CVPixelBufferPool]()
+
+    /// Flush idle buffers from every pool so the OS can reclaim their IOSurfaces.
+    static func flushBufferPool() {
+        bufferPoolLock.lock()
+        let pools = Array(bufferPools.values)
+        bufferPoolLock.unlock()
+
+        for pool in pools {
+            CVPixelBufferPoolFlush(pool, CVPixelBufferPoolFlushFlags(rawValue: 0))
+        }
+    }
+
+    /// Pool of recycled IOSurface-backed buffers for a given input geometry.
+    /// Pools are keyed by size and pixel format so a model with a different
+    /// input resolution (e.g. 384 px SigLIP) still recycles its buffers.
+    static func pixelBufferPool(size: CGSize, pixelFormat: OSType) -> CVPixelBufferPool? {
+        let key = BufferPoolKey(
+            width: Int(size.width),
+            height: Int(size.height),
+            pixelFormat: pixelFormat
+        )
+        bufferPoolLock.lock()
+        defer { bufferPoolLock.unlock() }
+
+        if let pool = bufferPools[key] {
+            return pool
+        }
+
         let poolAttrs: [String: Any] = [
             kCVPixelBufferPoolMinimumBufferCountKey as String: 4
         ]
         let bufferAttrs: [String: Any] = [
-            kCVPixelBufferWidthKey as String: 256,
-            kCVPixelBufferHeightKey as String: 256,
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+            kCVPixelBufferWidthKey as String: key.width,
+            kCVPixelBufferHeightKey as String: key.height,
+            kCVPixelBufferPixelFormatTypeKey as String: key.pixelFormat,
             kCVPixelBufferCGImageCompatibilityKey as String: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
         ]
         var pool: CVPixelBufferPool?
-        CVPixelBufferPoolCreate(kCFAllocatorDefault, poolAttrs as CFDictionary, bufferAttrs as CFDictionary, &pool)
-        return pool
-    }()
-
-    /// Flush idle buffers from the pool so the OS can reclaim their IOSurfaces.
-    static func flushBufferPool() {
-        if let pool = bufferPool {
-            CVPixelBufferPoolFlush(pool, CVPixelBufferPoolFlushFlags(rawValue: 0))
+        guard CVPixelBufferPoolCreate(
+            kCFAllocatorDefault,
+            poolAttrs as CFDictionary,
+            bufferAttrs as CFDictionary,
+            &pool
+        ) == kCVReturnSuccess, let pool else {
+            return nil
         }
+
+        bufferPools[key] = pool
+        return pool
     }
 
     /// Deep-copy an MLShapedArray's scalar data into a fresh, heap-backed MLMultiArray.
@@ -179,9 +215,9 @@ public struct ImgEncoder {
 
         guard let outputImage = filter.outputImage else { return nil }
 
-        // Get a recycled buffer from the pool (avoids IOSurface exhaustion during batch indexing)
+        // Get a recycled buffer from the model-sized pool.
         var pixelBuffer: CVPixelBuffer?
-        if size.width == 256, size.height == 256, let pool = bufferPool {
+        if let pool = pixelBufferPool(size: size, pixelFormat: kCVPixelFormatType_32ARGB) {
             let status = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer)
             guard status == kCVReturnSuccess, let buffer = pixelBuffer else { return nil }
             ciContext.render(outputImage, to: buffer)
