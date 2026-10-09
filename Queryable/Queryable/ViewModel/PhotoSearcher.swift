@@ -116,9 +116,9 @@ class PhotoSearcher: ObservableObject {
             self.embeddingStore = store
         } catch {
             logger.error("Failed to load model contract: \(error.localizedDescription)")
-            if let artifactError = error as? ModelArtifactError {
-                self.modelErrorMessage = artifactError.localizedDescription
-            }
+            self.modelErrorMessage = (error as? ModelArtifactError)?.localizedDescription
+                ?? (error as? EmbeddingModelSpecError)?.localizedDescription
+                ?? error.localizedDescription
             self.searchResultCode = .NEVER_INDEXED
             return
         }
@@ -204,6 +204,18 @@ class PhotoSearcher: ObservableObject {
             let imgEncoder = try ImgEncoder(resourcesAt: resourceURL, spec: self.modelSpec)
             print("\(startingTime.timeIntervalSinceNow * -1) seconds used for loading img encoder")
             self.imageEncoder = imgEncoder
+
+            // Ensure embeddingStore is ready before buildIndex runs.
+            // prepareModelForSearch() may not have been called (e.g. user went straight
+            // to the Build Index tab) or may have failed, leaving embeddingStore nil.
+            if self.embeddingStore == nil {
+                let modelSpec = self.modelSpec
+                let checkpointHash = try await Task.detached(priority: .utility) {
+                    try modelSpec.checkpointHash(resourcesAt: resourceURL)
+                }.value
+                self.embeddingStore = EmbeddingStore(spec: modelSpec, checkpointHash: checkpointHash)
+            }
+
             self.buildIndexCode = .IS_BUILDING_INDEX
         } catch let error {
             logger.error("Failed to load model: \(error.localizedDescription)")

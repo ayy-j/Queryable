@@ -374,10 +374,21 @@ struct EmbeddingModelSpec: Equatable, Sendable {
     }
 }
 
-enum EmbeddingModelSpecError: Error {
+enum EmbeddingModelSpecError: Error, LocalizedError {
     case invalidContract
     case modelFeatureMismatch(String)
     case unsupportedImagePreprocessing
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidContract:
+            return "Model spec contract is invalid: one or more required fields are empty, out of range, or mutually inconsistent."
+        case .modelFeatureMismatch(let modelName):
+            return "Model '\(modelName)' feature shape or type does not match the embedding spec (wrong input/output name, dimension, or data type)."
+        case .unsupportedImagePreprocessing:
+            return "Unsupported image preprocessing configuration: only 32ARGB pixel format with stretch aspect ratio is supported."
+        }
+    }
 }
 
 struct EmbeddingModelRegistry {
