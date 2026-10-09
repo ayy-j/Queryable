@@ -212,6 +212,40 @@ struct EmbeddingModelSpec: Equatable, Sendable {
         storageScalarType: "float32"
     )
 
+    /// MobileCLIP2-S4 (issue #16): FP16 towers exported from the pinned
+    /// `apple/MobileCLIP2-S4` checkpoint. Same runtime contract shape as S2 —
+    /// Int32 `input_tokens` text input (fed as float32 by `TextEncoder`, matching
+    /// the shipped S2 bundle), raw unnormalized 768-d features, ImageNet mean/std
+    /// baked into the image tower. L2 normalization happens at storage/search time.
+    static let mobileCLIP2S4 = try! EmbeddingModelSpec(
+        modelID: "mobileclip2-s4",
+        revision: "mobileclip2-s4-v1",
+        imageModelName: "ImageEncoder_mobileCLIP2_s4.mlmodelc",
+        textModelName: "TextEncoder_mobileCLIP2_s4.mlmodelc",
+        imageInputName: "colorImage",
+        imageInputType: .image,
+        imageOutputName: "embOutput",
+        imageOutputType: .multiArrayFloat32,
+        textInputName: "input_tokens",
+        textInputType: .multiArrayFloat32,
+        textOutputName: "text_embeddings",
+        textOutputType: .multiArrayFloat32,
+        imageSize: 256,
+        imagePreprocessing: ImagePreprocessing(
+            resizeFilter: "CILanczosScaleTransform",
+            pixelFormat: "32ARGB",
+            aspectRatioMode: "stretch",
+            fingerprint: "ci-lanczos-argb-256-v1"
+        ),
+        embeddingDimension: 768,
+        tokenizerKind: .clipBPE,
+        tokenizerAssets: ["vocab.json", "merges.txt"],
+        contextLength: 77,
+        vocabularySize: 49_408,
+        normalization: .l2,
+        storageScalarType: "float32"
+    )
+
     static func sigLIPSo400m(
         revision: String,
         imageModelName: String,
@@ -348,7 +382,8 @@ enum EmbeddingModelSpecError: Error {
 
 struct EmbeddingModelRegistry {
     private(set) var models: [String: EmbeddingModelSpec] = [
-        EmbeddingModelSpec.mobileCLIPS2.compatibilityIdentity: .mobileCLIPS2
+        EmbeddingModelSpec.mobileCLIPS2.compatibilityIdentity: .mobileCLIPS2,
+        EmbeddingModelSpec.mobileCLIP2S4.compatibilityIdentity: .mobileCLIP2S4
     ]
 
     func spec(for modelID: String, revision: String? = nil) -> EmbeddingModelSpec? {
@@ -364,7 +399,7 @@ struct EmbeddingModelRegistry {
             throw EmbeddingModelRegistryError.duplicateModelRevision
         }
         guard spec.tokenizerKind == .clipBPE,
-              spec.textInputType == .multiArrayFloat32,
+              spec.textInputType == .multiArrayFloat32 || spec.textInputType == .multiArrayInt32,
               spec.textOutputType == .multiArrayFloat32,
               spec.imageOutputType == .multiArrayFloat32 else {
             throw EmbeddingModelRegistryError.unsupportedRuntime

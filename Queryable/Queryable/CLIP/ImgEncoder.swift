@@ -94,7 +94,7 @@ public struct ImgEncoder {
     }
 
     init(resourcesAt baseURL: URL,
-         spec: EmbeddingModelSpec = .mobileCLIPS2,
+         spec: EmbeddingModelSpec = .mobileCLIP2S4,
          configuration config: MLModelConfiguration = .init()
     ) throws {
         self.spec = spec

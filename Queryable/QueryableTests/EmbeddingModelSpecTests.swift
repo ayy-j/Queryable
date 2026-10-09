@@ -82,11 +82,29 @@ final class EmbeddingModelSpecTests: XCTestCase {
         XCTAssertEqual(optionalG.embeddingDimension, 1_536)
     }
 
-    func testRegistryContainsOnlyVerifiedS2PresetByDefault() {
+    func testRegistryContainsVerifiedPresetsByDefault() {
         let registry = EmbeddingModelRegistry()
 
         XCTAssertEqual(registry.spec(for: "mobileclip-s2"), .mobileCLIPS2)
-        XCTAssertNil(registry.spec(for: "mobileclip2-s4"))
+        XCTAssertEqual(registry.spec(for: "mobileclip2-s4"), .mobileCLIP2S4)
+    }
+
+    func testS4SpecMatchesConvertedArtifactContract() {
+        let spec = EmbeddingModelSpec.mobileCLIP2S4
+
+        XCTAssertEqual(spec.imageModelName, "ImageEncoder_mobileCLIP2_s4.mlmodelc")
+        XCTAssertEqual(spec.textModelName, "TextEncoder_mobileCLIP2_s4.mlmodelc")
+        XCTAssertEqual(spec.imageInputName, "colorImage")
+        XCTAssertEqual(spec.imageOutputName, "embOutput")
+        XCTAssertEqual(spec.textInputName, "input_tokens")
+        XCTAssertEqual(spec.textOutputName, "text_embeddings")
+        XCTAssertEqual(spec.imageSize, 256)
+        XCTAssertEqual(spec.embeddingDimension, 768)
+        XCTAssertEqual(spec.contextLength, 77)
+        XCTAssertEqual(spec.vocabularySize, 49_408)
+        XCTAssertEqual(spec.tokenizerKind, .clipBPE)
+        XCTAssertEqual(spec.normalization, .l2)
+        XCTAssertNotEqual(spec.compatibilityIdentity, EmbeddingModelSpec.mobileCLIPS2.compatibilityIdentity)
     }
 
     func testImageBufferPoolsMatchEachModelResolution() {

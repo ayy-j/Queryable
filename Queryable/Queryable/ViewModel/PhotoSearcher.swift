@@ -76,7 +76,7 @@ class PhotoSearcher: ObservableObject {
         }
     }
 
-    init(modelSpec: EmbeddingModelSpec = .mobileCLIPS2) {
+    init(modelSpec: EmbeddingModelSpec = .mobileCLIP2S4) {
         self.modelSpec = modelSpec
         let defaultTOPK_SIM = UserDefaults.standard.object(forKey: "TOPK_SIM") as? Int ?? 120
         self.TOPK_SIM = defaultTOPK_SIM

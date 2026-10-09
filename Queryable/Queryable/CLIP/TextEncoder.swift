@@ -20,7 +20,7 @@ public struct TextEncoder {
     var model: MLModel
     
     init(resourcesAt baseURL: URL,
-         spec: EmbeddingModelSpec = .mobileCLIPS2,
+         spec: EmbeddingModelSpec = .mobileCLIP2S4,
          configuration config: MLModelConfiguration = .init()
     ) throws {
         guard spec.tokenizerKind == .clipBPE,
@@ -28,7 +28,7 @@ public struct TextEncoder {
               let mergesName = spec.mergesName else {
             throw TextEncodingError.unsupportedTokenizer
         }
-        guard spec.textInputType == .multiArrayFloat32,
+        guard spec.textInputType == .multiArrayFloat32 || spec.textInputType == .multiArrayInt32,
               spec.textOutputType == .multiArrayFloat32,
               spec.imageOutputType == .multiArrayFloat32 else {
             throw TextEncodingError.unsupportedFeatureType

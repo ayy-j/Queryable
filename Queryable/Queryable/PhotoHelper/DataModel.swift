@@ -11,7 +11,7 @@ final class DataModel: ObservableObject {
     let photoCollection = PhotoCollection(smartAlbum: .smartAlbumUserLibrary)
 
     /// The embedding model whose input resolution previews should match.
-    var modelSpec: EmbeddingModelSpec = .mobileCLIPS2
+    var modelSpec: EmbeddingModelSpec = .mobileCLIP2S4
     
     @Published var viewfinderImage: Image?
     @Published var thumbnailImage: UIImage?
