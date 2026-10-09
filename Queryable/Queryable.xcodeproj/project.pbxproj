@@ -15,12 +15,7 @@
 		94E917B32A5A475B00324937 /* BPETokenizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E917902A5A475B00324937 /* BPETokenizer.swift */; };
 		94E917B42A5A475B00324937 /* BPETokenizer+Reading.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E917912A5A475B00324937 /* BPETokenizer+Reading.swift */; };
 		94E917B52A5A475B00324937 /* Embedding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E917932A5A475B00324937 /* Embedding.swift */; };
-		PA0000022A5A475B00324937 /* ParityMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = PA0000012A5A475B00324937 /* ParityMetrics.swift */; };
-		PA0000042A5A475B00324937 /* ParityFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = PA0000032A5A475B00324937 /* ParityFixture.swift */; };
-		PA0000072AECD3CF007AB439 /* ParityMetricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PA0000062AECD3CF007AB439 /* ParityMetricsTests.swift */; };
 		94E917B72A5A475B00324937 /* PhotoSearchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E917952A5A475B00324937 /* PhotoSearchModel.swift */; };
-		C1A000022C8F000000000001 /* GPUSimilaritySearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A000012C8F000000000001 /* GPUSimilaritySearch.swift */; };
-		C1A000042C8F000000000001 /* EmbeddingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A000032C8F000000000001 /* EmbeddingStore.swift */; };
 		94E917B82A5A475B00324937 /* DataModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E917972A5A475B00324937 /* DataModel.swift */; };
 		94E917B92A5A475B00324937 /* PhotoAssetCollection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E917982A5A475B00324937 /* PhotoAssetCollection.swift */; };
 		94E917BA2A5A475B00324937 /* CachedImageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E917992A5A475B00324937 /* CachedImageManager.swift */; };
@@ -48,9 +43,14 @@
 		94E917DF2A5A47A300324937 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 94E917D72A5A47A300324937 /* Localizable.strings */; };
 		94E917E02A5A47A300324937 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 94E917DA2A5A47A300324937 /* Localizable.strings */; };
 		94ECA38F2A5D52060066F64B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 94ECA38E2A5D52050066F64B /* Assets.xcassets */; };
+		C1A000022C8F000000000001 /* GPUSimilaritySearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A000012C8F000000000001 /* GPUSimilaritySearch.swift */; };
+		C1A000042C8F000000000001 /* EmbeddingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A000032C8F000000000001 /* EmbeddingStore.swift */; };
 		DE4D625A2AECD3CF007AB439 /* FeedbackItemView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE4D62592AECD3CF007AB439 /* FeedbackItemView.swift */; };
 		DE4D62602AECD3CF007AB439 /* EmbeddingModelSpecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE4D62612AECD3CF007AB439 /* EmbeddingModelSpecTests.swift */; };
 		DE4D62622AECD3CF007AB439 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DE4D62632AECD3CF007AB439 /* XCTest.framework */; };
+		PA0000022A5A475B00324937 /* ParityMetrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = PA0000012A5A475B00324937 /* ParityMetrics.swift */; };
+		PA0000042A5A475B00324937 /* ParityFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = PA0000032A5A475B00324937 /* ParityFixture.swift */; };
+		PA0000072AECD3CF007AB439 /* ParityMetricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PA0000062AECD3CF007AB439 /* ParityMetricsTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -142,6 +142,7 @@
 				94E917492A5A45C000324937 /* Queryable */,
 				DE4D62642AECD3CF007AB439 /* QueryableTests */,
 				94E917482A5A45C000324937 /* Products */,
+				F10DBC62307864BD00828410 /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -171,15 +172,6 @@
 			path = Queryable;
 			sourceTree = "<group>";
 		};
-		DE4D62642AECD3CF007AB439 /* QueryableTests */ = {
-			isa = PBXGroup;
-			children = (
-				DE4D62612AECD3CF007AB439 /* EmbeddingModelSpecTests.swift */,
-				PA0000062AECD3CF007AB439 /* ParityMetricsTests.swift */,
-			);
-			path = QueryableTests;
-			sourceTree = "<group>";
-		};
 		94E917502A5A45C200324937 /* Preview Content */ = {
 			isa = PBXGroup;
 			children = (
@@ -205,15 +197,6 @@
 				94E917912A5A475B00324937 /* BPETokenizer+Reading.swift */,
 			);
 			path = Tokenizer;
-			sourceTree = "<group>";
-		};
-		PA0000052A5A475B00324937 /* Parity */ = {
-			isa = PBXGroup;
-			children = (
-				PA0000012A5A475B00324937 /* ParityMetrics.swift */,
-				PA0000032A5A475B00324937 /* ParityFixture.swift */,
-			);
-			path = Parity;
 			sourceTree = "<group>";
 		};
 		94E917922A5A475B00324937 /* Model */ = {
@@ -334,6 +317,32 @@
 			path = es.lproj;
 			sourceTree = "<group>";
 		};
+		DE4D62642AECD3CF007AB439 /* QueryableTests */ = {
+			isa = PBXGroup;
+			children = (
+				DE4D62612AECD3CF007AB439 /* EmbeddingModelSpecTests.swift */,
+				PA0000062AECD3CF007AB439 /* ParityMetricsTests.swift */,
+			);
+			path = QueryableTests;
+			sourceTree = "<group>";
+		};
+		F10DBC62307864BD00828410 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				DE4D62632AECD3CF007AB439 /* XCTest.framework */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		PA0000052A5A475B00324937 /* Parity */ = {
+			isa = PBXGroup;
+			children = (
+				PA0000012A5A475B00324937 /* ParityMetrics.swift */,
+				PA0000032A5A475B00324937 /* ParityFixture.swift */,
+			);
+			path = Parity;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -380,7 +389,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1430;
-				LastUpgradeCheck = 1430;
+				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					94E917462A5A45C000324937 = {
 						CreatedOnToolsVersion = 14.3.1;
@@ -547,6 +556,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -579,6 +589,7 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -598,6 +609,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -607,6 +619,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
@@ -639,6 +652,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -651,6 +665,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				VALIDATE_PRODUCT = YES;
@@ -665,7 +680,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Queryable/Preview Content\"";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = NA884F5FYM;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Allow access to all your photos for offline search.";
@@ -674,13 +689,13 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mazzystar.Queryable;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ayyjay.Queryable;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -696,7 +711,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Queryable/Preview Content\"";
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = NA884F5FYM;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Allow access to all your photos for offline search.";
@@ -705,13 +720,13 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mazzystar.Queryable;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ayyjay.Queryable;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -722,13 +737,12 @@
 		94E9176F2A5A45C200324937 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 8ZKRT2YUM5;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mazzystar.QueryableTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -742,13 +756,12 @@
 		94E917702A5A45C200324937 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 8ZKRT2YUM5;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.4;
+				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mazzystar.QueryableTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";

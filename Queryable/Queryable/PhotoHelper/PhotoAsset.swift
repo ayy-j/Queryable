@@ -76,7 +76,7 @@ extension PhotoAsset: Hashable {
     }
 }
 
-extension PHObject: Identifiable {
+extension PHObject: @retroactive Identifiable {
     public var id: String { localIdentifier }
 }
 
