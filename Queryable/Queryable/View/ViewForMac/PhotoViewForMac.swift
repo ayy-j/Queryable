@@ -182,7 +182,7 @@ struct PhotoViewForMac: View {
                 }
             }
             
-            if let image = image {
+            if image != nil {
                 HStack {
 //                    ShareLink(item: image, preview: SharePreview(photoSearcher.searchString, image: image))
 //                        .font(.system(size: 23))

@@ -24,7 +24,7 @@ struct ContentView: View {
                         Spacer()
                     }
                     
-                case .mac, .unspecified, .tv, .carPlay:
+                case .mac, .unspecified, .tv, .carPlay, .vision:
                     VStack {
                         HStack {
                             Spacer(minLength: 300)

@@ -60,7 +60,7 @@ struct ConfigView: View {
                             .padding(.horizontal)
                             .accentColor(.primary)
                             .labelsHidden()
-                            .onChange(of: sliderValue) { newValue in
+                            .onChange(of: sliderValue) { _, newValue in
                                 photoSearcher.TOPK_SIM = Int(newValue)
                             }
                         Text("Display number of results: \(photoSearcher.TOPK_SIM)")

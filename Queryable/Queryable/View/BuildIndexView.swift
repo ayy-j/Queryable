@@ -43,8 +43,6 @@ struct BuildIndexView: View {
             ModelErrorView(photoSearcher: photoSearcher)
         case .BUILD_FINISHED:
             BuildFinishView(photoSearcher: photoSearcher)
-        default:
-            Text("")
         }
     }
 }
@@ -144,7 +142,8 @@ struct ModelErrorView: View {
 }
 
 
-struct BuildFinishView: View {    @Environment(\.presentationMode) var presentationMode
+struct BuildFinishView: View {
+    @Environment(\.presentationMode) var presentationMode
     @Environment(\.colorScheme) var colorScheme
     @ObservedObject var photoSearcher: PhotoSearcher
     
