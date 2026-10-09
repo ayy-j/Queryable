@@ -41,9 +41,10 @@ public struct TextEncoder {
         let vocabURL = baseURL.appending(path: vocabularyName)
         let mergesURL = baseURL.appending(path: mergesName)
         
-#if os(iOS)
-        // Fallback to CPU only to avoid NN compute error on iPhone < 11 and iPad < 9th gen
-        if !UIDevice.chipIsA13OrLater() {
+#if os(iOS) && !targetEnvironment(macCatalyst)
+        // UIDevice.model is a generic label ("iPhone"), not a hardware ID.
+        // Keep the existing compatibility fallback only for known older devices.
+        if Self.requiresCPUOnlyTextEncoding(hardwareIdentifier: Self.hardwareIdentifier) {
             config.computeUnits = .cpuOnly
         }
 #endif
@@ -61,6 +62,30 @@ public struct TextEncoder {
         self.tokenizer = tokenizer
         self.model = textEncoderModel
     }
+
+    static func requiresCPUOnlyTextEncoding(hardwareIdentifier: String) -> Bool {
+        let parts = hardwareIdentifier.split(separator: ",")
+        guard parts.count == 2 else { return false }
+        for family in ["iPhone", "iPad"] where parts[0].hasPrefix(family) {
+            guard let generation = Int(parts[0].dropFirst(family.count)) else { return false }
+            // iPhone12,* is A13; iPad12,* is the A13 ninth-generation iPad.
+            return generation < 12
+        }
+        return false
+    }
+
+#if os(iOS)
+    private static var hardwareIdentifier: String {
+        if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] {
+            return simulated
+        }
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        return withUnsafeBytes(of: &systemInfo.machine) { bytes in
+            String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+        }
+    }
+#endif
     
     public func computeTextEmbedding(prompt: String) throws -> MLShapedArray<Float32> {
         let promptEmbedding = try self.encode(prompt)
@@ -111,10 +136,9 @@ public struct TextEncoder {
         let inputName = inputDescription.name
         let inputShape = inputShape
 
-        let floatIds = ids.map { Float32($0) }
-        let inputArray = MLShapedArray<Float32>(scalars: floatIds, shape: inputShape)
+        let inputArray = try Self.tokenArray(ids: ids, shape: inputShape, inputType: spec.textInputType)
         let inputFeatures = try MLDictionaryFeatureProvider(
-            dictionary: [inputName: MLMultiArray(inputArray)])
+            dictionary: [inputName: inputArray])
 
         let result = try queue.sync { try model.prediction(from: inputFeatures) }
         guard let embeddingFeature = result.featureValue(for: spec.textOutputName),
@@ -124,6 +148,17 @@ public struct TextEncoder {
             throw TextEncodingError.invalidOutput
         }
         return MLShapedArray<Float32>(converting: multiArray)
+    }
+
+    static func tokenArray(ids: [Int], shape: [Int], inputType: ModelFeatureType) throws -> MLMultiArray {
+        switch inputType {
+        case .multiArrayInt32:
+            return MLMultiArray(MLShapedArray<Int32>(scalars: ids.map { Int32($0) }, shape: shape))
+        case .multiArrayFloat32:
+            return MLMultiArray(MLShapedArray<Float32>(scalars: ids.map { Float32($0) }, shape: shape))
+        default:
+            throw TextEncodingError.unsupportedFeatureType
+        }
     }
 
     enum TextEncodingError: Error {

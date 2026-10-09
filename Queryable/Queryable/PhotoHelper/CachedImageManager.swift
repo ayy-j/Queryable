@@ -84,7 +84,102 @@ actor CachedImageManager {
     func cancelImageRequest(for requestID: PHImageRequestID) {
         imageManager.cancelImageRequest(requestID)
     }
+
+    /// Index only the final image. Display requests remain opportunistic.
+    func imageForIndexing(for asset: PhotoAsset, targetSize: CGSize) async throws -> UIImage {
+        guard let phAsset = asset.phAsset else { throw CachedImageManagerError.failed }
+        let options = PHImageRequestOptions()
+        options.isNetworkAccessAllowed = false
+        options.deliveryMode = .highQualityFormat
+        let manager = imageManager
+        let contentMode = imageContentMode
+        return try await IndexingImageRequest.image { completion in
+            manager.requestImage(for: phAsset, targetSize: targetSize, contentMode: contentMode,
+                                 options: options, resultHandler: completion)
+        } cancel: { requestID in
+            manager.cancelImageRequest(requestID)
+        }
+    }
+}
+
+/// Photos can call back before requestImage returns, more than once, or after
+/// cancellation. Protect the continuation and request ID together in every case.
+final class IndexingImageRequest: @unchecked Sendable {
+    typealias Completion = (UIImage?, [AnyHashable: Any]?) -> Void
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<UIImage, Error>?
+    private var result: Result<UIImage, Error>?
+    private var requestID: PHImageRequestID?
+    private var wasCancelled = false
+
+    static func image(start: (@escaping Completion) -> PHImageRequestID,
+                      cancel: @escaping (PHImageRequestID) -> Void) async throws -> UIImage {
+        let request = IndexingImageRequest()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard request.install(continuation) else { return }
+                let id = start { image, info in
+                    if (info?[PHImageCancelledKey] as? NSNumber)?.boolValue == true {
+                        request.finish(.failure(CancellationError()))
+                    } else if let error = info?[PHImageErrorKey] as? Error {
+                        request.finish(.failure(error))
+                    } else if image == nil && (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue == true {
+                        request.finish(.failure(CachedImageManager.CachedImageManagerError.failed))
+                    } else if (info?[PHImageResultIsDegradedKey] as? NSNumber)?.boolValue != true {
+                        request.finish(image.map { .success($0) }
+                            ?? .failure(CachedImageManager.CachedImageManagerError.failed))
+                    }
+                }
+                request.setRequestID(id, cancel: cancel)
+            }
+        } onCancel: {
+            request.cancel(using: cancel)
+        }
+    }
+
+    private func install(_ continuation: CheckedContinuation<UIImage, Error>) -> Bool {
+        lock.lock()
+        if let result {
+            lock.unlock()
+            continuation.resume(with: result)
+            return false
+        }
+        self.continuation = continuation
+        lock.unlock()
+        return true
+    }
+
+    private func finish(_ result: Result<UIImage, Error>) {
+        lock.lock()
+        guard self.result == nil else { lock.unlock(); return }
+        self.result = result
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
+
+    private func setRequestID(_ id: PHImageRequestID, cancel: (PHImageRequestID) -> Void) {
+        lock.lock()
+        requestID = id
+        let shouldCancel = wasCancelled
+        lock.unlock()
+        if shouldCancel { cancel(id) }
+    }
+
+    private func cancel(using cancel: (PHImageRequestID) -> Void) {
+        lock.lock()
+        wasCancelled = true
+        let id = requestID
+        let continuation = result == nil ? self.continuation : nil
+        if result == nil {
+            result = .failure(CancellationError())
+            self.continuation = nil
+        }
+        lock.unlock()
+        continuation?.resume(throwing: CancellationError())
+        if let id { cancel(id) }
+    }
 }
 
 fileprivate let logger = Logger(subsystem: "com.apple.swiftplaygroundscontent.capturingphotos", category: "CachedImageManager")
-

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="2700" version="1.3">
+   <BuildAction parallelizeBuildables="NO" buildImplicitDependencies="YES">
+      <BuildActionEntries>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="NO" buildForAnalyzing="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="94E917462A5A45C000324937" BuildableName="Queryable.app" BlueprintName="Queryable" ReferencedContainer="container:Queryable.xcodeproj"/>
+         </BuildActionEntry>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="94E917562A5A45C200324937" BuildableName="QueryableTests.xctest" BlueprintName="QueryableTests" ReferencedContainer="container:Queryable.xcodeproj"/>
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction buildConfiguration="Release" selectedDebuggerIdentifier="" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.PosixSpawn" shouldUseLaunchSchemeArgsEnv="NO" codeCoverageEnabled="NO">
+      <Testables>
+         <TestableReference skipped="NO" parallelizable="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="94E917562A5A45C200324937" BuildableName="QueryableTests.xctest" BlueprintName="QueryableTests" ReferencedContainer="container:Queryable.xcodeproj"/>
+         </TestableReference>
+      </Testables>
+      <MacroExpansion>
+         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="94E917462A5A45C000324937" BuildableName="Queryable.app" BlueprintName="Queryable" ReferencedContainer="container:Queryable.xcodeproj"/>
+      </MacroExpansion>
+   </TestAction>
+</Scheme>

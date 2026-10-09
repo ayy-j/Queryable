@@ -36,6 +36,11 @@ struct PhotoAsset: Identifiable {
         let fetchedAssets = PHAsset.fetchAssets(withLocalIdentifiers: [identifier], options: nil)
         self.phAsset = fetchedAssets.firstObject
     }
+
+    init(identifier: String, phAsset: PHAsset?) {
+        self.identifier = identifier
+        self.phAsset = phAsset
+    }
     
     func setIsFavorite(_ isFavorite: Bool) async {
         guard let phAsset = phAsset else { return }
@@ -81,4 +86,3 @@ extension PHObject: @retroactive Identifiable {
 }
 
 fileprivate let logger = Logger(subsystem: "com.mazzystar.Queryable", category: "PhotoAsset")
-

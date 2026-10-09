@@ -51,7 +51,7 @@ class EmbeddingStore: @unchecked Sendable {
     private let tombstoneFileName: String
     private let baseDir: URL
 
-    init(spec: EmbeddingModelSpec, checkpointHash: String) {
+    init(spec: EmbeddingModelSpec, checkpointHash: String, directory: URL? = nil) {
         self.spec = spec
         self.checkpointHash = checkpointHash
         self.recordEmbeddingSize = spec.embeddingDimension * MemoryLayout<Float32>.size
@@ -59,7 +59,7 @@ class EmbeddingStore: @unchecked Sendable {
         self.mainFileName = "\(baseName).qemb"
         self.journalFileName = "\(baseName)_journal.qemb"
         self.tombstoneFileName = "\(baseName)_tombstones.txt"
-        self.baseDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        self.baseDir = directory ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
 
     // MARK: - Load
@@ -180,9 +180,16 @@ class EmbeddingStore: @unchecked Sendable {
         do {
             if FileManager.default.fileExists(atPath: journalPath.path) {
                 let handle = try FileHandle(forWritingTo: journalPath)
-                defer { handle.closeFile() }
-                handle.seekToEndOfFile()
-                handle.write(data)
+                defer { try? handle.close() }
+                let originalLength = try handle.seekToEnd()
+                do {
+                    try handle.write(contentsOf: data)
+                    try handle.synchronize()
+                } catch {
+                    // Do not leave a partial record behind a previously valid journal.
+                    try? handle.truncate(atOffset: originalLength)
+                    throw error
+                }
             } else {
                 try data.write(to: journalPath, options: .atomic)
             }
@@ -296,6 +303,7 @@ class EmbeddingStore: @unchecked Sendable {
         do {
             try handle.seek(toOffset: 8)
             try handle.write(contentsOf: Data(bytes: &count, count: MemoryLayout<UInt64>.size))
+            try handle.synchronize()
             return true
         } catch {
             print("[EmbeddingStore] Failed to update record count: \(error)")

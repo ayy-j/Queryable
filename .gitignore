@@ -18,3 +18,10 @@ xcuserdata/
 
 # Downloaded compiled Core ML models
 *.mlmodelc/
+
+# Local performance reports and Xcode result bundles
+performance-results/
+
+# Python tool caches
+__pycache__/
+*.pyc

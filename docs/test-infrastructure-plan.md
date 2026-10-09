@@ -1,88 +1,29 @@
-# Resolving the XCTest execution block
+# Running the app tests
 
-Status: blocked · Owner: maintainer · Last verified: 2026-10-08 against Xcode 27.0 (build 27A266a)
+Status: simulator execution verified on October 9, 2026, with Xcode 27.0 and the iOS 27.0 simulator runtime.
 
-## The block
+The full ordinary suite now executes. The latest run passed **45 tests with no failures or skips**, including the bundled S4 text prediction, photo-request callback/cancellation tests, indexing failure/retry tests, an isolated journal round trip, and the existing model/tokenizer/parity-metric checks. The separate opt-in performance test was deliberately excluded. Result bundle: `build/indexing-tests-final.xcresult`; log: `build/indexing-tests-final.log` (both ignored by Git).
 
-`QueryableTests` compiles (`xcodebuild build-for-testing` succeeds), but the suite
-**cannot be executed in place** on this machine. Two independent causes, either of
-which is sufficient to block a run:
-
-1. **No simulator runtimes are installed.** `xcrun simctl list runtimes` returns
-   nothing, so no `platform=iOS Simulator` destination exists.
-2. **No signing identity for the fallback destination.** The only other viable
-   destination, `platform=macOS,arch=arm64,variant=Designed for iPad`, fails with
-   `No signing certificate "iOS Development" found` for team `8ZKRT2YUM5`, and
-   ad-hoc signing is refused for SDK iOS 27.0.
-
-Current substitute: a throwaway SwiftPM harness compiles the real
-`Embedding.swift`, `BPETokenizer*.swift`, and `ImgEncoder.swift` on macOS and runs
-the spec/pool tests (8/8 passing). It **cannot** cover `ImgEncoder.encode`,
-`EmbeddingStore` file I/O, or `GPUSimilaritySearch` — those need the real app
-target on a simulator or device.
-
-## Resolution plan
-
-### Step 1 — Install an iOS Simulator runtime *(removes cause 1)*
+From the repository folder, choose a simulator returned by `xcrun simctl list devices available` and run:
 
 ```sh
-sudo xcodebuild -downloadPlatform iOS \
-  -buildVersion 27A266a
-```
-
-or interactively: Xcode → Settings → Components → iOS Simulator.
-
-Verify:
-
-```sh
-xcrun simctl list runtimes   # expect at least one iOS 27.x runtime
-```
-
-### Step 2 — Run the suite on the simulator *(no signing required)*
-
-Simulator destinations do not need a development certificate:
-
-```sh
-DEVELOPER_DIR=/Applications/Xcode-27.0.0.app/Contents/Developer \
-xcodebuild test \
+TEST_RUNNER_QUERYABLE_BENCHMARK=1 xcodebuild test \
   -project Queryable/Queryable.xcodeproj \
-  -scheme Queryable \
-  -destination 'platform=iOS Simulator,name=iPhone 17' \
-  CODE_SIGNING_ALLOWED=NO
+  -scheme QueryablePerformance \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -derivedDataPath build/app-tests \
+  -skip-testing:QueryableTests/PerformanceMeasurementTests \
+  CODE_SIGNING_ALLOWED=NO ENABLE_TESTABILITY=YES ONLY_ACTIVE_ARCH=YES
 ```
 
-Acceptance: all tests pass, including the two pixel-buffer-pool tests added with
-the model-driven pool change.
+The existing performance scheme supplies a test host without debugger instrumentation. The environment flag opens an empty host instead of the normal app interface, preventing competing model loading or Photos access. It does not enable the opt-in performance test because that test is excluded explicitly. `ENABLE_TESTABILITY=YES` is necessary for the Release build's `@testable` imports. No simulator signing identity is needed.
 
-### Step 3 — Exercise the paths the harness cannot reach
+The model packaging script needs a complete local S4 model and tokenizer set. Missing resources cause a build failure; the model prediction test explicitly skips if its artifacts are absent. Check the executed and skipped counts when recording results.
 
-Once Step 2 is green, add execution coverage for:
+## Coverage and remaining work
 
-- `ImgEncoder.encode` / `encodeBatch` — requires the MobileCLIP-S2 `.mlmodelc`
-  towers in the test bundle (or a fixture model); assert output shape and
-  normalization against `spec.embeddingDimension`.
-- `EmbeddingStore` round-trip — write to a temp directory, `loadAll()`, assert
-  header fields, journal replay, and the `metadataTooLarge` guard.
-- `GPUSimilaritySearch` — dimension-parameterized top-k against a small known
-  corpus on the simulator GPU.
+The new failure tests use generated images, fake photo callbacks/encoders, and temporary storage. They cover delayed/final/duplicate callbacks, offline-only missing images, cancellation before and during requests, individual encoding failures, invalid outputs, save failure/retry, and preservation of a successful 5,000-photo checkpoint. They do not read or change personal photos or the real saved index.
 
-### Step 4 — (Optional) Mac / Designed-for-iPad runs
+The suite still needs real Photos permission/iCloud walkthroughs, interrupted/corrupt storage recovery coverage, independent model parity fixtures, and CPU/GPU ranking comparisons. The installed simulator crashed inside Apple's GPU graph code in an earlier performance run; use a physical device for GPU validation. The physical iPhone benchmark is described in [the performance guide](performance-measurement.md).
 
-Only needed if Mac-native test runs are desired. Requires a valid **iOS
-Development** certificate for team `8ZKRT2YUM5` in the keychain (Xcode →
-Settings → Accounts → Manage Certificates). Ad-hoc signing is not accepted by
-SDK iOS 27.0 for this variant, so there is no cert-free path here.
-
-### Step 5 — Wire CI so the block cannot regress
-
-Add a GitHub Actions job on a `macos-15`-or-newer runner (Xcode 27 selected via
-`DEVELOPER_DIR`) that runs the Step 2 command on every PR. Runner images ship
-with simulator runtimes preinstalled, which removes the local-machine dependency
-entirely and makes "tests actually executed" a merge gate rather than a
-manual claim.
-
-## Out of scope
-
-The epic-level blockers (S4/SigLIP `.mlmodelc` towers, Gemma tokenizer, parity
-fixtures, benchmark corpora) are tracked in issue #1 and are not resolved by this
-plan.
+Automated GitHub checks remain to be added. A future CI job must provide a supported Xcode/runtime and model resources, report missing/skipped model coverage, and fail when any executed test fails. The earlier October 8 claims that this machine had no simulator runtime or usable signing identity are obsolete. The Designed-for-iPad Mac test host stalled in later validation; the native component runner is the working Mac measurement path.

@@ -7,7 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		4D3B1D642A5F95300004C06F /* CoreMLModels in Resources */ = {isa = PBXBuildFile; fileRef = 4D3B1D632A5F95300004C06F /* CoreMLModels */; };
+		B40000010000000000000001 /* IndexingReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000020000000000000001 /* IndexingReliabilityTests.swift */; };
+		B30000010000000000000001 /* PerformanceMeasurementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000020000000000000001 /* PerformanceMeasurementTests.swift */; };
 		94E9174B2A5A45C000324937 /* QueryableApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E9174A2A5A45C000324937 /* QueryableApp.swift */; };
 		94E917522A5A45C200324937 /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 94E917512A5A45C200324937 /* Preview Assets.xcassets */; };
 		94E917B12A5A475B00324937 /* TextEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E9178D2A5A475B00324937 /* TextEncoder.swift */; };
@@ -64,6 +65,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B40000020000000000000001 /* IndexingReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexingReliabilityTests.swift; sourceTree = "<group>"; };
+		B30000020000000000000001 /* PerformanceMeasurementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceMeasurementTests.swift; sourceTree = "<group>"; };
 		4D3B1D632A5F95300004C06F /* CoreMLModels */ = {isa = PBXFileReference; lastKnownFileType = folder; path = CoreMLModels; sourceTree = "<group>"; };
 		94E917472A5A45C000324937 /* Queryable.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Queryable.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		94E9174A2A5A45C000324937 /* QueryableApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueryableApp.swift; sourceTree = "<group>"; };
@@ -320,6 +323,8 @@
 		DE4D62642AECD3CF007AB439 /* QueryableTests */ = {
 			isa = PBXGroup;
 			children = (
+				B40000020000000000000001 /* IndexingReliabilityTests.swift */,
+				B30000020000000000000001 /* PerformanceMeasurementTests.swift */,
 				DE4D62612AECD3CF007AB439 /* EmbeddingModelSpecTests.swift */,
 				PA0000062AECD3CF007AB439 /* ParityMetricsTests.swift */,
 			);
@@ -353,6 +358,7 @@
 				94E917432A5A45C000324937 /* Sources */,
 				94E917442A5A45C000324937 /* Frameworks */,
 				94E917452A5A45C000324937 /* Resources */,
+				C1A000052C8F000000000001 /* Bundle Core ML Models */,
 			);
 			buildRules = (
 			);
@@ -430,7 +436,6 @@
 			files = (
 				94E917DE2A5A47A300324937 /* Localizable.strings in Resources */,
 				94E917DF2A5A47A300324937 /* Localizable.strings in Resources */,
-				4D3B1D642A5F95300004C06F /* CoreMLModels in Resources */,
 				94E917522A5A45C200324937 /* Preview Assets.xcassets in Resources */,
 				94E917E02A5A47A300324937 /* Localizable.strings in Resources */,
 				94E917DD2A5A47A300324937 /* Localizable.strings in Resources */,
@@ -447,6 +452,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		C1A000052C8F000000000001 /* Bundle Core ML Models */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../tools/bundle-coreml-models.sh",
+				"$(SRCROOT)/Queryable/CoreMLModels",
+			);
+			name = "Bundle Core ML Models";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/CoreMLModels",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"${SRCROOT}/../tools/bundle-coreml-models.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		94E917432A5A45C000324937 /* Sources */ = {
@@ -493,6 +519,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B40000010000000000000001 /* IndexingReliabilityTests.swift in Sources */,
+				B30000010000000000000001 /* PerformanceMeasurementTests.swift in Sources */,
 				DE4D62602AECD3CF007AB439 /* EmbeddingModelSpecTests.swift in Sources */,
 				PA0000072AECD3CF007AB439 /* ParityMetricsTests.swift in Sources */,
 			);
@@ -682,6 +710,7 @@
 				DEVELOPMENT_ASSET_PATHS = "\"Queryable/Preview Content\"";
 				DEVELOPMENT_TEAM = NA884F5FYM;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Allow access to all your photos for offline search.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -713,6 +742,7 @@
 				DEVELOPMENT_ASSET_PATHS = "\"Queryable/Preview Content\"";
 				DEVELOPMENT_TEAM = NA884F5FYM;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Allow access to all your photos for offline search.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

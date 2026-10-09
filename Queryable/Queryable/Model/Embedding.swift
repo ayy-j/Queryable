@@ -213,9 +213,8 @@ struct EmbeddingModelSpec: Equatable, Sendable {
     )
 
     /// MobileCLIP2-S4 (issue #16): FP16 towers exported from the pinned
-    /// `apple/MobileCLIP2-S4` checkpoint. Same runtime contract shape as S2 —
-    /// Int32 `input_tokens` text input (fed as float32 by `TextEncoder`, matching
-    /// the shipped S2 bundle), raw unnormalized 768-d features, ImageNet mean/std
+    /// `apple/MobileCLIP2-S4` checkpoint. Int32 `input_tokens` text input,
+    /// raw unnormalized 768-d features, ImageNet mean/std
     /// baked into the image tower. L2 normalization happens at storage/search time.
     static let mobileCLIP2S4 = try! EmbeddingModelSpec(
         modelID: "mobileclip2-s4",
@@ -227,7 +226,7 @@ struct EmbeddingModelSpec: Equatable, Sendable {
         imageOutputName: "embOutput",
         imageOutputType: .multiArrayFloat32,
         textInputName: "input_tokens",
-        textInputType: .multiArrayFloat32,
+        textInputType: .multiArrayInt32,
         textOutputName: "text_embeddings",
         textOutputType: .multiArrayFloat32,
         imageSize: 256,

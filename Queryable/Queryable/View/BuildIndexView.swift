@@ -43,6 +43,8 @@ struct BuildIndexView: View {
             ModelErrorView(photoSearcher: photoSearcher)
         case .BUILD_FINISHED:
             BuildFinishView(photoSearcher: photoSearcher)
+        case .BUILD_INCOMPLETE, .BUILD_ERROR:
+            IndexingRecoveryView(photoSearcher: photoSearcher)
         }
     }
 }
@@ -61,6 +63,11 @@ struct StartBuildView: View {
             let start = "Total"
             let end = "Photos need to be indexed."
             Text("\(NSLocalizedString(start, comment: "")) \(photoSearcher.totalUnIndexedPhotosNum) \(NSLocalizedString(end, comment: ""))")
+            if photoSearcher.blankEmbeddingPhotosNum > 0 {
+                Text("\(photoSearcher.blankEmbeddingPhotosNum) existing entries need repair and will be retried.")
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+            }
             // Prevent Low Power Mode to avoid crash.
             if ProcessInfo.processInfo.isLowPowerModeEnabled && photoSearcher.totalUnIndexedPhotosNum > 300 {
                 // Low Power Mode is enabled. Start reducing activity to conserve energy.
@@ -107,8 +114,9 @@ struct BuildingIndexView: View {
                     .frame(height: geometry.size.height * 0.8)
 
                 VStack(spacing: 4) {
-                    let end = "Photos have been indexed."
-                    Text("\(photoSearcher.curIndexingNums+1)/\(photoSearcher.totalUnIndexedPhotosNum) \(NSLocalizedString(end, comment: ""))")
+                    Text("\(photoSearcher.curIndexingNums)/\(photoSearcher.totalUnIndexedPhotosNum) photos checked")
+                    Text("\(photoSearcher.savedIndexingPhotosNum) saved · \(photoSearcher.buildingEmbedding.count) waiting to save · \(photoSearcher.failedIndexingPhotosNum) need retry")
+                        .font(.caption)
 
                     Text(NSLocalizedString("Task runs entirely locally. Do not operate until completed.", comment: ""))
                         .padding([.leading, .trailing])
@@ -123,13 +131,40 @@ struct BuildingIndexView: View {
     }
 }
 
+struct IndexingRecoveryView: View {
+    @Environment(\.presentationMode) var presentationMode
+    @ObservedObject var photoSearcher: PhotoSearcher
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Label(photoSearcher.buildIndexCode == .BUILD_ERROR ? "Indexing stopped" : "Some photos need another try",
+                  systemImage: "exclamationmark.triangle")
+                .font(.title2)
+            Text("\(photoSearcher.savedIndexingPhotosNum) photos saved. \(photoSearcher.remainingIndexingPhotosNum) still need indexing.")
+            Text(photoSearcher.indexingErrorMessage ?? "Some photos could not be loaded or processed. If they are stored only in iCloud, download them in Photos, then retry.")
+                .foregroundColor(.secondary)
+            Button("Retry remaining photos") {
+                photoSearcher.buildIndexCode = .LOADING_MODEL
+            }
+            if !photoSearcher.savedEmbedding.isEmpty {
+                Button("Search saved photos") {
+                    photoSearcher.searchResultCode = .MODEL_PREPARED
+                    presentationMode.wrappedValue.dismiss()
+                }
+            }
+        }
+        .multilineTextAlignment(.center)
+        .padding()
+    }
+}
+
 
 struct ModelErrorView: View {
     @ObservedObject var photoSearcher: PhotoSearcher
 
     var body: some View {
         VStack(spacing: 12) {
-            Label("Model files missing", systemImage: "exclamationmark.triangle")
+            Label("Search model unavailable", systemImage: "exclamationmark.triangle")
                 .font(.title2)
                 .fontWeight(.semibold)
             Text(photoSearcher.modelErrorMessage ?? "The Core ML model files could not be loaded.")

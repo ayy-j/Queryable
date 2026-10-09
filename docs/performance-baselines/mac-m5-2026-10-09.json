@@ -1,0 +1,267 @@
+{
+  "schemaVersion": 1,
+  "comparisonKey": {
+    "workloadVersion": "generated-rgba-1024x768-and-lcg-vectors-v1",
+    "configuration": {
+      "batchSize": 32,
+      "computeUnits": "all",
+      "includeSearch": true,
+      "indexSizes": [
+        1000,
+        10000,
+        25000
+      ],
+      "modelID": "mobileclip2-s4",
+      "samples": 20,
+      "topK": 120,
+      "warmups": 3
+    },
+    "modelID": "mobileclip2-s4",
+    "modelRevision": "mobileclip2-s4-v1",
+    "modelContract": "7e54cbc768d58ae82c1e2c11e3347e489bffea88b6495fc020602101f17016fb",
+    "embeddingDimension": 768,
+    "hardware": "Mac17,3",
+    "os": "Version 27.0.1 (Build 26A434)",
+    "platform": "macOS-native-components",
+    "simulatorModel": null,
+    "gpuName": "Apple M5",
+    "physicalMemoryBytes": 25769803776,
+    "actualImageComputeUnits": "all",
+    "actualTextComputeUnits": "all",
+    "artifacts": [
+      {
+        "bytes": 643524996,
+        "name": "ImageEncoder_mobileCLIP2_s4.mlmodelc",
+        "sha256": "631f94f6ef9553819f04c047d97f0de1ef3fa32a03520184a8a8267cd6e7dcdc"
+      },
+      {
+        "bytes": 247459717,
+        "name": "TextEncoder_mobileCLIP2_s4.mlmodelc",
+        "sha256": "b9da38259828c8a734fd19037df8442937ecf704e07eb5fcbe3d3d6f940c521d"
+      },
+      {
+        "bytes": 862328,
+        "name": "vocab.json",
+        "sha256": "26a4f9a50a9c27a4beb303601e6888273aaf2960f8f0fe9d2cfd8f74672b705c"
+      },
+      {
+        "bytes": 524657,
+        "name": "merges.txt",
+        "sha256": "78dcc5244f14c2e0a804d8ebcea3418f5486b3517b0c8d6de420fb38124f6de3"
+      }
+    ],
+    "xcode": "Xcode 27.0\nBuild version 27A266a",
+    "buildConfiguration": "Release",
+    "buildSettings": [],
+    "destination": "native-mac",
+    "swiftOptimization": "-O"
+  },
+  "provenance": {
+    "commit": "2a43a7bab2c0fab97ccb44549027ac5568c74d49",
+    "workingTreeDirty": true,
+    "sourceSHA256": "1cdc753bece6199df9b3d89ea874d77b448dfd6a27f60d42ce14649a5caf4336",
+    "xcode": "Xcode 27.0\nBuild version 27A266a",
+    "buildConfiguration": "Release",
+    "destination": "native-mac",
+    "buildSettings": [],
+    "swiftOptimization": "-O",
+    "swift": "Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)\nTarget: arm64-apple-macosx27.0.0"
+  },
+  "runs": 3,
+  "metrics": {
+    "image_batch": {
+      "medianMilliseconds": 205.325604,
+      "p95Milliseconds": 236.96125,
+      "runMediansMilliseconds": [
+        203.3354165,
+        205.325604,
+        225.351375
+      ],
+      "workItemsPerSecond": 152.77394961668583
+    },
+    "image_batch_1": {
+      "medianMilliseconds": 10.2120415,
+      "p95Milliseconds": 14.023667,
+      "runMediansMilliseconds": [
+        10.2120415,
+        9.984957999999999,
+        13.6058545
+      ],
+      "workItemsPerSecond": 98.72807339579246
+    },
+    "image_first_batch": {
+      "medianMilliseconds": 262.278042,
+      "p95Milliseconds": 264.419292,
+      "runMediansMilliseconds": [
+        264.419292,
+        261.437792,
+        262.278042
+      ],
+      "workItemsPerSecond": 122.00792622967651
+    },
+    "image_model_load": {
+      "medianMilliseconds": 88.095583,
+      "p95Milliseconds": 101.988042,
+      "runMediansMilliseconds": [
+        101.988042,
+        88.095583,
+        83.508
+      ],
+      "workItemsPerSecond": 11.35130690945084
+    },
+    "index_build_1000": {
+      "medianMilliseconds": 0.784333,
+      "p95Milliseconds": 1.841083,
+      "runMediansMilliseconds": [
+        0.720959,
+        0.784333,
+        1.841083
+      ],
+      "workItemsPerSecond": 1274968.6676449927
+    },
+    "index_build_10000": {
+      "medianMilliseconds": 7.560167,
+      "p95Milliseconds": 7.872167,
+      "runMediansMilliseconds": [
+        6.446375,
+        7.560167,
+        7.872167
+      ],
+      "workItemsPerSecond": 1322722.1038900332
+    },
+    "index_build_25000": {
+      "medianMilliseconds": 14.220208,
+      "p95Milliseconds": 16.5625,
+      "runMediansMilliseconds": [
+        14.220208,
+        14.177542,
+        16.5625
+      ],
+      "workItemsPerSecond": 1758061.485457878
+    },
+    "search_1000": {
+      "medianMilliseconds": 0.6898124999999999,
+      "p95Milliseconds": 0.90575,
+      "runMediansMilliseconds": [
+        0.6898124999999999,
+        0.541833,
+        0.8663125
+      ],
+      "workItemsPerSecond": 1444.2649142919042
+    },
+    "search_10000": {
+      "medianMilliseconds": 1.56725,
+      "p95Milliseconds": 1.952584,
+      "runMediansMilliseconds": [
+        1.3440625000000002,
+        1.749313,
+        1.56725
+      ],
+      "workItemsPerSecond": 646.9185715830926
+    },
+    "search_25000": {
+      "medianMilliseconds": 3.3727915,
+      "p95Milliseconds": 3.897542,
+      "runMediansMilliseconds": [
+        3.3727915,
+        3.332833,
+        3.3807704999999997
+      ],
+      "workItemsPerSecond": 295.9782052304883
+    },
+    "search_first_1000": {
+      "medianMilliseconds": 10.059917,
+      "p95Milliseconds": 20.621958,
+      "runMediansMilliseconds": [
+        9.228291,
+        10.059917,
+        20.621958
+      ],
+      "workItemsPerSecond": 99.40439866452178
+    },
+    "search_first_10000": {
+      "medianMilliseconds": 7.275,
+      "p95Milliseconds": 168.297625,
+      "runMediansMilliseconds": [
+        168.297625,
+        7.057417,
+        7.275
+      ],
+      "workItemsPerSecond": 137.4570446735395
+    },
+    "search_first_25000": {
+      "medianMilliseconds": 9.318375,
+      "p95Milliseconds": 9.5215,
+      "runMediansMilliseconds": [
+        9.5215,
+        9.315875,
+        9.318375
+      ],
+      "workItemsPerSecond": 107.31484835070493
+    },
+    "text_first_query": {
+      "medianMilliseconds": 5.510458,
+      "p95Milliseconds": 7.103167,
+      "runMediansMilliseconds": [
+        5.510458,
+        7.103167,
+        5.386083
+      ],
+      "workItemsPerSecond": 181.47311893131206
+    },
+    "text_model_load": {
+      "medianMilliseconds": 152.386917,
+      "p95Milliseconds": 153.996666,
+      "runMediansMilliseconds": [
+        150.606458,
+        153.996666,
+        152.386917
+      ],
+      "workItemsPerSecond": 6.562243135347373
+    },
+    "text_query": {
+      "medianMilliseconds": 2.7088955,
+      "p95Milliseconds": 4.339334,
+      "runMediansMilliseconds": [
+        2.7088955,
+        2.7036875,
+        3.459021
+      ],
+      "workItemsPerSecond": 369.2341820907169
+    },
+    "text_search_1000": {
+      "medianMilliseconds": 3.455,
+      "p95Milliseconds": 3.622708,
+      "runMediansMilliseconds": [
+        3.455,
+        3.4452920000000002,
+        3.466271
+      ],
+      "workItemsPerSecond": 288.3499401032295
+    },
+    "text_search_10000": {
+      "medianMilliseconds": 4.2458955,
+      "p95Milliseconds": 4.613667,
+      "runMediansMilliseconds": [
+        4.4173124999999995,
+        4.2329170000000005,
+        4.2458955
+      ],
+      "workItemsPerSecond": 230.92009708573642
+    },
+    "text_search_25000": {
+      "medianMilliseconds": 6.0582294999999995,
+      "p95Milliseconds": 6.396,
+      "runMediansMilliseconds": [
+        6.169041999999999,
+        6.0582294999999995,
+        6.0346665
+      ],
+      "workItemsPerSecond": 163.65691239828436
+    }
+  },
+  "thermalStates": [
+    "nominal"
+  ],
+  "medianSampledPeakBytes": 341607864
+}

@@ -8,7 +8,9 @@
 import Foundation
 import CoreML
 import CoreImage
+#if canImport(UIKit)
 import UIKit
+#endif
 
 public struct ImgEncoder {
     var model: MLModel

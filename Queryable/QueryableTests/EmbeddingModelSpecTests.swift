@@ -1,4 +1,5 @@
 import XCTest
+import CoreML
 import CoreVideo
 import CoreGraphics
 @testable import Queryable
@@ -97,6 +98,7 @@ final class EmbeddingModelSpecTests: XCTestCase {
         XCTAssertEqual(spec.imageInputName, "colorImage")
         XCTAssertEqual(spec.imageOutputName, "embOutput")
         XCTAssertEqual(spec.textInputName, "input_tokens")
+        XCTAssertEqual(spec.textInputType, .multiArrayInt32)
         XCTAssertEqual(spec.textOutputName, "text_embeddings")
         XCTAssertEqual(spec.imageSize, 256)
         XCTAssertEqual(spec.embeddingDimension, 768)
@@ -105,6 +107,34 @@ final class EmbeddingModelSpecTests: XCTestCase {
         XCTAssertEqual(spec.tokenizerKind, .clipBPE)
         XCTAssertEqual(spec.normalization, .l2)
         XCTAssertNotEqual(spec.compatibilityIdentity, EmbeddingModelSpec.mobileCLIPS2.compatibilityIdentity)
+    }
+
+    func testTokenArraysUseDeclaredInputTypeAndPreserveIDs() throws {
+        let ids = [49_406, 320, 49_407, 0]
+        for inputType in [ModelFeatureType.multiArrayInt32, .multiArrayFloat32] {
+            let array = try TextEncoder.tokenArray(ids: ids, shape: [1, 4], inputType: inputType)
+
+            XCTAssertEqual(array.dataType, inputType.multiArrayDataType)
+            XCTAssertEqual(array.shape.map { $0.intValue }, [1, 4])
+            XCTAssertEqual((0..<array.count).map { array[$0].intValue }, ids)
+        }
+        XCTAssertThrowsError(try TextEncoder.tokenArray(ids: ids, shape: [1, 4], inputType: .multiArrayFloat16))
+    }
+
+    func testS4TextEncoderLoadsAndPredictsWithBundledModel() throws {
+        let resources = try XCTUnwrap(Bundle.main.url(forResource: "CoreMLModels", withExtension: nil))
+        let spec = EmbeddingModelSpec.mobileCLIP2S4
+        guard spec.missingArtifacts(resourcesAt: resources).isEmpty else {
+            throw XCTSkip("S4 compiled model artifacts are not bundled in this checkout")
+        }
+        let configuration = MLModelConfiguration()
+        configuration.computeUnits = .cpuOnly
+        let encoder = try TextEncoder(resourcesAt: resources, spec: spec, configuration: configuration)
+        let embedding = try encoder.computeTextEmbedding(prompt: "a photo of a cat")
+
+        XCTAssertEqual(embedding.shape, [1, spec.embeddingDimension])
+        XCTAssertTrue(embedding.scalars.allSatisfy { $0.isFinite })
+        XCTAssertTrue(embedding.scalars.contains { $0 != 0 })
     }
 
     func testImageBufferPoolsMatchEachModelResolution() {

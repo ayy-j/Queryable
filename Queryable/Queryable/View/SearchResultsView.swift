@@ -282,19 +282,6 @@ struct SearchResultsView_Previews: PreviewProvider {
 import UIKit
 
 public extension UIDevice {
-    static func chipIsA13OrLater() -> Bool {
-        let devicePattern = /(AppleTV|iPad|iPhone|Watch|iPod)(\d+),(\d+)/
-        
-        if let match = current.model.firstMatch(of: devicePattern) {
-            let deviceModel = match.1
-            let majorRevision = Int(match.2)!
-            
-            return (deviceModel == "iPhone" || deviceModel == "iPad") && majorRevision >= 12
-        }
-
-        return false
-    }
-    
     static let modelIsValid: Bool = {
         var systemInfo = utsname()
         uname(&systemInfo)

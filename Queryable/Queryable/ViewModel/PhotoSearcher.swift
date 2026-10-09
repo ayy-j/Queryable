@@ -29,8 +29,23 @@ enum BUILD_INDEX_CODE: Int {
     case MODEL_ERROR         = 1
     case IS_BUILDING_INDEX   = 2
     case BUILD_FINISHED      = 3
+    case BUILD_INCOMPLETE    = 4
+    case BUILD_ERROR         = 5
 }
 
+/// Injectable I/O boundaries let failure tests exercise the real indexing flow
+/// without reading Photos, loading a model, or changing the user's saved index.
+struct PhotoIndexingOperations {
+    var fetchImage: (PhotoAsset, CGSize) async throws -> UIImage
+    var encodeBatch: ([UIImage]) throws -> [MLShapedArray<Float32>]
+    var encodeImage: (UIImage) async throws -> MLShapedArray<Float32>
+    var save: ([String: MLMultiArray]) throws -> Void
+}
+
+enum PhotoIndexingError: Error {
+    case encoderNotReady
+    case invalidEmbedding
+}
 
 @MainActor
 class PhotoSearcher: ObservableObject {
@@ -46,7 +61,12 @@ class PhotoSearcher: ObservableObject {
     /// Actionable message when model files are missing/unreadable; nil otherwise.
     @Published var modelErrorMessage: String? = nil
     @Published var totalUnIndexedPhotosNum: Int = -1
-    @Published var curIndexingNums: Int = -1
+    @Published var curIndexingNums: Int = 0
+    @Published var savedIndexingPhotosNum: Int = 0
+    @Published var failedIndexingPhotosNum: Int = 0
+    @Published var remainingIndexingPhotosNum: Int = 0
+    @Published var blankEmbeddingPhotosNum: Int = 0
+    @Published var indexingErrorMessage: String?
     @Published var curShowingPhoto: UIImage = UIImage(systemName: "photo")!
 
     @Published var isFindingSimilarPhotos = false
@@ -64,6 +84,8 @@ class PhotoSearcher: ObservableObject {
     private var totalPhotosNum = -1
     private let BUILD_INDEX_FRAGMENT_LENGTH = 100
     private let SAVE_EMBEDDING_EVERY = 5000
+    private let indexingOperations: PhotoIndexingOperations?
+    private var isBuildingIndex = false
 
     /// GPU-accelerated similarity search (Float16 MPSGraph matmul)
     private var gpuSearch: GPUSimilaritySearch?
@@ -76,8 +98,10 @@ class PhotoSearcher: ObservableObject {
         }
     }
 
-    init(modelSpec: EmbeddingModelSpec = .mobileCLIP2S4) {
+    init(modelSpec: EmbeddingModelSpec = .mobileCLIP2S4,
+         indexingOperations: PhotoIndexingOperations? = nil) {
         self.modelSpec = modelSpec
+        self.indexingOperations = indexingOperations
         let defaultTOPK_SIM = UserDefaults.standard.object(forKey: "TOPK_SIM") as? Int ?? 120
         self.TOPK_SIM = defaultTOPK_SIM
         self.gpuSearch = GPUSimilaritySearch(embeddingDimension: modelSpec.embeddingDimension)
@@ -143,7 +167,7 @@ class PhotoSearcher: ObservableObject {
             }
         } else {
             self.searchResultCode = .NEVER_INDEXED
-            print("Load photos embedding failure.")
+            print("No compatible nonempty saved photo index loaded. Indexing is required.")
         }
 
         // set network authorization
@@ -224,101 +248,109 @@ class PhotoSearcher: ObservableObject {
         }
     }
 
-    func defaultEmbedding() -> MLShapedArray<Float32> {
-        // Zero embedding: 0 cosine similarity with any query, won't appear in results
-        let zeros = [Float32](repeating: 0, count: modelSpec.embeddingDimension)
-        return MLShapedArray<Float32>(scalars: zeros, shape: [1, modelSpec.embeddingDimension])
+    private func validatedEmbedding(_ embedding: MLShapedArray<Float32>) throws -> MLMultiArray {
+        let values = embedding.scalars
+        guard values.count == modelSpec.embeddingDimension,
+              embedding.shape == [1, modelSpec.embeddingDimension] || embedding.shape == [modelSpec.embeddingDimension],
+              values.allSatisfy({ $0.isFinite }), values.contains(where: { $0 != 0 }) else {
+            throw PhotoIndexingError.invalidEmbedding
+        }
+        // Copy scalar values rather than retaining the prediction's IOSurface.
+        return MLMultiArray(MLShapedArray<Float32>(scalars: values, shape: [1, modelSpec.embeddingDimension]))
+    }
+
+    private func hasUsableEmbedding(for id: String) -> Bool {
+        guard let value = savedEmbedding[id], value.dataType == .float32,
+              value.count == modelSpec.embeddingDimension else { return false }
+        let values = MLShapedArray<Float32>(converting: value).scalars
+        return values.allSatisfy { $0.isFinite } && values.contains { $0 != 0 }
     }
 
     func batchBuildIndex(assets: [PhotoAsset]) async throws {
         let targetSize = CGSize(width: modelSpec.imageSize, height: modelSpec.imageSize)
+        let operations: PhotoIndexingOperations
+        if let injected = indexingOperations {
+            operations = injected
+        } else {
+            guard let encoder = imageEncoder else { throw PhotoIndexingError.encoderNotReady }
+            let cache = photoCollection.cache
+            operations = PhotoIndexingOperations(
+                fetchImage: { try await cache.imageForIndexing(for: $0, targetSize: $1) },
+                encodeBatch: { try encoder.encodeBatch(images: $0) },
+                encodeImage: { try await encoder.encode(image: $0) },
+                save: { _ in }
+            )
+        }
         await photoCollection.cache.startCaching(for: assets, targetSize: targetSize)
-
-        let BATCH_SIZE = 32
-
-        for batchStart in stride(from: 0, to: assets.count, by: BATCH_SIZE) {
-            let batchEnd = min(batchStart + BATCH_SIZE, assets.count)
-            let batchAssets = Array(assets[batchStart..<batchEnd])
-
-            // Phase 1: Parallel image fetching
-            var images = [(PhotoAsset, UIImage)]()
-            await withTaskGroup(of: (PhotoAsset, UIImage?).self) { group in
-                for asset in batchAssets {
-                    group.addTask {
-                        var fetchedImage: UIImage? = nil
-                        _ = await self.photoCollection.cache.requestImage(for: asset, targetSize: targetSize) { result in
-                            fetchedImage = result?.image
+        do {
+            for batchStart in stride(from: 0, to: assets.count, by: 32) {
+                try Task.checkCancellation()
+                let batchAssets = Array(assets[batchStart..<min(batchStart + 32, assets.count)])
+                var images = [(PhotoAsset, UIImage)]()
+                try await withThrowingTaskGroup(of: (PhotoAsset, UIImage?).self) { group in
+                    for asset in batchAssets {
+                        group.addTask {
+                            do { return (asset, try await operations.fetchImage(asset, targetSize)) }
+                            catch is CancellationError { throw CancellationError() }
+                            catch { return (asset, nil) }
                         }
-                        return (asset, fetchedImage)
+                    }
+                    for try await (asset, image) in group {
+                        if let image { images.append((asset, image)) }
+                        else { self.failedIndexingPhotosNum += 1 }
                     }
                 }
-                for await (asset, image) in group {
-                    if let image = image {
-                        images.append((asset, image))
-                    } else {
-                        self.buildingEmbedding[asset.id] = MLMultiArray(self.defaultEmbedding())
-                    }
-                }
-            }
-
-            // Phase 2: Batch CoreML prediction
-            var batchFailed = false
-            if !images.isEmpty {
-                autoreleasepool {
+                try Task.checkCancellation()
+                if !images.isEmpty {
                     do {
-                        let uiImages = images.map { $0.1 }
-                        let embeddings = try self.imageEncoder!.encodeBatch(images: uiImages)
-
-                        for (i, (asset, _)) in images.enumerated() {
-                            self.buildingEmbedding[asset.id] = ImgEncoder.detachFromIOSurface(embeddings[i])
+                        let embeddings = try autoreleasepool {
+                            try operations.encodeBatch(images.map { $0.1 })
+                        }
+                        guard embeddings.count == images.count else { throw PhotoIndexingError.invalidEmbedding }
+                        for (index, (asset, _)) in images.enumerated() {
+                            do { buildingEmbedding[asset.id] = try validatedEmbedding(embeddings[index]) }
+                            catch { failedIndexingPhotosNum += 1 }
                         }
                     } catch {
-                        print("[BatchIndex] Batch encoding failed, falling back to single: \(error)")
-                        batchFailed = true
-                    }
-                }
-                // Fallback outside autoreleasepool (encode is async)
-                if batchFailed {
-                    for (asset, image) in images {
-                        do {
-                            let emb = try await self.imageEncoder!.encode(image: image)
-                            self.buildingEmbedding[asset.id] = ImgEncoder.detachFromIOSurface(emb)
-                        } catch {
-                            self.buildingEmbedding[asset.id] = MLMultiArray(self.defaultEmbedding())
+                        // A batch failure must not discard images that work individually.
+                        for (asset, image) in images {
+                            try Task.checkCancellation()
+                            do {
+                                let embedding = try await operations.encodeImage(image)
+                                buildingEmbedding[asset.id] = try validatedEmbedding(embedding)
+                            } catch is CancellationError { throw CancellationError() }
+                            catch { failedIndexingPhotosNum += 1 }
                         }
                     }
+                    curIndexingPhoto = images.last!.1
                 }
+                curIndexingNums += batchAssets.count
+                curShowingPhoto = curIndexingPhoto
+                images.removeAll()
+                ImgEncoder.flushBufferPool()
             }
-
-            // Capture last image for UI before clearing
-            let lastImage = images.last?.1
-
-            // Explicitly release UIImages before flush
-            images.removeAll()
-
-            // Release pooled CVPixelBuffers so the OS can reclaim their IOSurfaces
+        } catch {
+            await photoCollection.cache.stopCaching(for: assets, targetSize: targetSize)
             ImgEncoder.flushBufferPool()
-
-            // Update UI with last image from batch
-            if let lastImage {
-                self.curIndexingPhoto = lastImage
-            }
+            throw error
         }
-
         await photoCollection.cache.stopCaching(for: assets, targetSize: targetSize)
     }
 
     func fetchUnIndexedPhotos() async throws {
         let startingTime = Date()
         self.unIndexedPhotos = [PhotoAsset]()
+        self.allPhotosId.removeAll()
+        self.blankEmbeddingPhotosNum = 0
         var photoIdSet = Set<String>(minimumCapacity: photoCollection.photoAssets.count)
 
         for idx in 0..<self.photoCollection.photoAssets.count {
             let asset = self.photoCollection.photoAssets[idx]
             self.allPhotosId[asset.id] = 1
             photoIdSet.insert(asset.id)
-            if self.savedEmbedding[asset.id] == nil {
+            if !hasUsableEmbedding(for: asset.id) {
                 self.unIndexedPhotos.append(asset)
+                if savedEmbedding[asset.id] != nil { blankEmbeddingPhotosNum += 1 }
             }
         }
 
@@ -365,10 +397,16 @@ class PhotoSearcher: ObservableObject {
             throw EmbeddingStoreError.writeFailed
         }
 
-        // Update GPU index with new embeddings
-        try gpuSearch?.addEmbeddings(new_indexed_results)
         for (key, value) in new_indexed_results {
             self.savedEmbedding[key] = value
+        }
+        // The journal is already saved. If acceleration fails, keep that work
+        // searchable through the existing CPU path instead of reporting a save failure.
+        do {
+            try gpuSearch?.addEmbeddings(new_indexed_results)
+        } catch {
+            gpuSearch = nil
+            logger.error("GPU index update failed; using CPU search: \(error.localizedDescription)")
         }
         print("After update, embedding count=\(self.savedEmbedding.count)")
         print("Embedding saved (incremental)")
@@ -378,57 +416,79 @@ class PhotoSearcher: ObservableObject {
      Build index
      */
     func buildIndex() async {
-        self.buildingEmbedding = [String: MLMultiArray]()
+        await buildIndex(assets: unIndexedPhotos.filter { !hasUsableEmbedding(for: $0.id) })
+    }
 
-        // set network authorization
-        await self.photoCollection.cache.requestOptions.isNetworkAccessAllowed = false
+    func buildIndex(assets: [PhotoAsset]) async {
+        guard !isBuildingIndex else { return }
+        isBuildingIndex = true
+        defer {
+            isBuildingIndex = false
+            imageEncoder = nil
+            ImgEncoder.flushBufferPool()
+        }
+        buildIndexCode = .IS_BUILDING_INDEX
+        indexingErrorMessage = nil
+        curIndexingNums = 0
+        savedIndexingPhotosNum = 0
+        failedIndexingPhotosNum = 0
+        totalUnIndexedPhotosNum = assets.count
+        remainingIndexingPhotosNum = assets.count
 
         do {
-             for idx in stride(from: 0, to: self.unIndexedPhotos.count, by: self.BUILD_INDEX_FRAGMENT_LENGTH) {
-                 let endPoint = min(idx+self.BUILD_INDEX_FRAGMENT_LENGTH, self.unIndexedPhotos.count)
-                 let assets = Array(self.unIndexedPhotos[idx..<endPoint])
-
-                 try await self.batchBuildIndex(assets: assets)
-                 self.curIndexingNums += assets.count
-                 self.curShowingPhoto = self.curIndexingPhoto
-
-                 // Yield every ~500 images so the Neural Engine runtime
-                 // can reclaim internal IOSurface allocations.
-                 if self.curIndexingNums % 500 < self.BUILD_INDEX_FRAGMENT_LENGTH {
-                     try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-                 }
-
-                 if curIndexingNums > 0 && self.buildingEmbedding.count >= SAVE_EMBEDDING_EVERY {
-                     print("Save index for \(curIndexingNums) images.")
-                     try self.updateEmbedding(new_indexed_results: self.buildingEmbedding)
-                     self.buildingEmbedding = [String: MLMultiArray]()
-                 }
+            // A save retry commits retained work before attempting more photos.
+            let retainedCount = buildingEmbedding.count
+            try persistBuildingEmbeddings()
+            curIndexingNums += retainedCount
+            let pendingAssets = assets.filter { !hasUsableEmbedding(for: $0.id) }
+            for index in stride(from: 0, to: pendingAssets.count, by: BUILD_INDEX_FRAGMENT_LENGTH) {
+                let end = min(index + BUILD_INDEX_FRAGMENT_LENGTH, pendingAssets.count)
+                try await batchBuildIndex(assets: Array(pendingAssets[index..<end]))
+                if buildingEmbedding.count >= SAVE_EMBEDDING_EVERY {
+                    try persistBuildingEmbeddings()
+                }
+                // Give the Neural Engine runtime a chance to reclaim allocations.
+                if curIndexingNums % 500 < BUILD_INDEX_FRAGMENT_LENGTH {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                }
             }
-
-            // save embedding
-            try self.updateEmbedding(new_indexed_results: self.buildingEmbedding)
-
+            try Task.checkCancellation()
+            try persistBuildingEmbeddings()
+            remainingIndexingPhotosNum = assets.filter { !hasUsableEmbedding(for: $0.id) }.count
+            if remainingIndexingPhotosNum == 0 {
+                buildIndexCode = .BUILD_FINISHED
+                totalUnIndexedPhotosNum = 0
+            } else {
+                buildIndexCode = .BUILD_INCOMPLETE
+            }
+            if embeddingStore?.needsCompaction() == true {
+                // Compaction is optional: the successful journal save is durable.
+                if embeddingStore?.compact(savedEmbedding) == false {
+                    logger.error("Index compaction failed; retaining the saved journal.")
+                }
+            }
         } catch {
-            print("Build index error: \(error). Saving \(self.buildingEmbedding.count) embeddings indexed so far.")
-            do {
-               try self.updateEmbedding(new_indexed_results: self.buildingEmbedding)
-            } catch {
-               logger.error("Failed to save indexed embeddings: \(error.localizedDescription)")
-            }
+            remainingIndexingPhotosNum = assets.filter { !hasUsableEmbedding(for: $0.id) }.count
+            indexingErrorMessage = error is CancellationError
+                ? "Indexing was interrupted. Saved photos are safe; retry to continue."
+                : "The index could not be saved or completed. Retry to keep going."
+            buildIndexCode = .BUILD_ERROR
+            logger.error("Indexing stopped with \(self.buildingEmbedding.count) unsaved entries: \(error.localizedDescription)")
+            // Keep unsaved embeddings in memory so a save retry need not re-encode.
         }
+    }
 
-        // Compact storage if needed
-        if embeddingStore?.needsCompaction() == true {
-            embeddingStore?.compact(self.savedEmbedding)
+    private func persistBuildingEmbeddings() throws {
+        guard !buildingEmbedding.isEmpty else { return }
+        let count = buildingEmbedding.count
+        if let operations = indexingOperations {
+            try operations.save(buildingEmbedding)
+            savedEmbedding.merge(buildingEmbedding) { _, new in new }
+        } else {
+            try updateEmbedding(new_indexed_results: buildingEmbedding)
         }
-
-        // delete large memory usage
-        self.buildingEmbedding = [String: MLMultiArray]()
-        self.imageEncoder = nil
-        self.buildIndexCode = .BUILD_FINISHED
-        self.totalUnIndexedPhotosNum = 0
-
-        clearCache()
+        savedIndexingPhotosNum += count
+        buildingEmbedding.removeAll()
     }
 
     private func getDocumentsDirectory() -> URL {
