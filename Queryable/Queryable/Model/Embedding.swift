@@ -354,7 +354,8 @@ struct EmbeddingModelSpec: Equatable, Sendable {
     }
 
     func validateImageRuntimePreprocessing() throws {
-        guard imagePreprocessing.pixelFormat == "32ARGB",
+        guard imagePreprocessing.resizeFilter == "CILanczosScaleTransform",
+              imagePreprocessing.pixelFormat == "32ARGB",
               imagePreprocessing.aspectRatioMode == "stretch" else {
             throw EmbeddingModelSpecError.unsupportedImagePreprocessing
         }
@@ -388,7 +389,7 @@ enum EmbeddingModelSpecError: Error, LocalizedError {
         case .modelFeatureMismatch(let modelName):
             return "Model '\(modelName)' feature shape or type does not match the embedding spec (wrong input/output name, dimension, or data type)."
         case .unsupportedImagePreprocessing:
-            return "Unsupported image preprocessing configuration: only 32ARGB pixel format with stretch aspect ratio is supported."
+            return "Unsupported image preprocessing configuration: only CILanczosScaleTransform with 32ARGB pixels and stretch aspect ratio is supported."
         }
     }
 }

@@ -35,7 +35,7 @@ public struct ImgEncoder {
         bufferPoolLock.unlock()
 
         for pool in pools {
-            CVPixelBufferPoolFlush(pool, CVPixelBufferPoolFlushFlags(rawValue: 0))
+            CVPixelBufferPoolFlush(pool, .excessBuffers)
         }
     }
 
@@ -43,9 +43,11 @@ public struct ImgEncoder {
     /// Pools are keyed by size and pixel format so a model with a different
     /// input resolution (e.g. 384 px SigLIP) still recycles its buffers.
     static func pixelBufferPool(size: CGSize, pixelFormat: OSType) -> CVPixelBufferPool? {
+        guard let width = Int(exactly: size.width), let height = Int(exactly: size.height),
+              width > 0, height > 0 else { return nil }
         let key = BufferPoolKey(
-            width: Int(size.width),
-            height: Int(size.height),
+            width: width,
+            height: height,
             pixelFormat: pixelFormat
         )
         bufferPoolLock.lock()
@@ -84,13 +86,16 @@ public struct ImgEncoder {
     /// and MLMultiArray(shapedArray) may share that IOSurface storage rather than copying.
     /// Storing those wrappers in savedEmbedding means each embedding retains an IOSurface,
     /// hitting the per-process 16384 IOSurface limit at ~15800 embeddings.
-    /// This method breaks that chain by memcpy-ing the floats into plain heap memory.
+    /// This method breaks that chain by copying logical scalars into plain heap memory.
     static func detachFromIOSurface(_ shapedArray: MLShapedArray<Float32>) -> MLMultiArray {
         let count = shapedArray.scalarCount
         let heapArray = try! MLMultiArray(shape: [1, NSNumber(value: count)], dataType: .float32)
         let dst = heapArray.dataPointer.assumingMemoryBound(to: Float32.self)
-        shapedArray.withUnsafeShapedBufferPointer { ptr, _, _ in
-            dst.update(from: ptr.baseAddress!, count: count)
+        // Prediction arrays may be strided; a raw contiguous copy would include padding.
+        shapedArray.scalars.withUnsafeBufferPointer { ptr in
+            if let source = ptr.baseAddress {
+                dst.update(from: source, count: count)
+            }
         }
         return heapArray
     }
@@ -124,19 +129,7 @@ public struct ImgEncoder {
 
     public func encode(image: UIImage) async throws -> MLShapedArray<Float32> {
         do {
-            let inputSize = CGSize(width: spec.imageSize, height: spec.imageSize)
-            guard let buffer = Self.resizeAndConvertToBuffer(
-                image: image,
-                size: inputSize,
-                preprocessing: spec.imagePreprocessing
-            ) else {
-                throw ImageEncodingError.bufferConversionError
-            }
-
-            guard let inputFeatures = try? MLDictionaryFeatureProvider(dictionary: [spec.imageInputName: buffer]) else {
-                throw ImageEncodingError.featureProviderError
-            }
-
+            let inputFeatures = try Self.imageFeatureProvider(for: image, spec: spec)
             let result = try queue.sync { try model.prediction(from: inputFeatures) }
             return try Self.validatedEmbedding(from: result, spec: spec)
         } catch {
@@ -151,7 +144,6 @@ public struct ImgEncoder {
     /// Neural Engine IOSurface allocations promptly between batches.
     public func encodeBatch(images: [UIImage]) throws -> [MLShapedArray<Float32>] {
         guard !images.isEmpty else { return [] }
-        let targetSize = CGSize(width: spec.imageSize, height: spec.imageSize)
 
         // autoreleasepool ensures CoreML's IOSurface-backed MLMultiArrays
         // and Espresso intermediates are released before the next batch
@@ -160,15 +152,7 @@ public struct ImgEncoder {
             featureProviders.reserveCapacity(images.count)
 
             for image in images {
-                guard let buffer = Self.resizeAndConvertToBuffer(
-                    image: image,
-                    size: targetSize,
-                    preprocessing: spec.imagePreprocessing
-                ) else {
-                    throw ImageEncodingError.bufferConversionError
-                }
-                let features = try MLDictionaryFeatureProvider(dictionary: [spec.imageInputName: buffer])
-                featureProviders.append(features)
+                featureProviders.append(try Self.imageFeatureProvider(for: image, spec: spec))
             }
 
             let batchProvider = MLArrayBatchProvider(array: featureProviders)
@@ -178,6 +162,19 @@ public struct ImgEncoder {
 
             return try Self.validatedEmbeddings(from: batchResults, expectedCount: images.count, spec: spec)
         }
+    }
+
+    /// Shared single/batch input path. Reject unsupported preprocessing before Core Image KVC.
+    static func imageFeatureProvider(for image: UIImage, spec: EmbeddingModelSpec) throws -> MLFeatureProvider {
+        try spec.validateImageRuntimePreprocessing()
+        guard let buffer = resizeAndConvertToBuffer(
+            image: image,
+            size: CGSize(width: spec.imageSize, height: spec.imageSize),
+            preprocessing: spec.imagePreprocessing
+        ) else {
+            throw ImageEncodingError.bufferConversionError
+        }
+        return try MLDictionaryFeatureProvider(dictionary: [spec.imageInputName: buffer])
     }
 
     /// Validate the runtime output, including providers whose metadata passed model validation.
@@ -235,7 +232,8 @@ public struct ImgEncoder {
         size: CGSize,
         preprocessing: ImagePreprocessing
     ) -> CVPixelBuffer? {
-        guard preprocessing.pixelFormat == "32ARGB" else { return nil }
+        guard let width = Int(exactly: size.width), let height = Int(exactly: size.height),
+              width > 0, height > 0 else { return nil }
         guard let cgImage = image.cgImage else { return nil }
 
         let ciImage = CIImage(cgImage: cgImage)
@@ -265,7 +263,7 @@ public struct ImgEncoder {
         ]
         let status = CVPixelBufferCreate(
             kCFAllocatorDefault,
-            Int(size.width), Int(size.height),
+            width, height,
             kCVPixelFormatType_32ARGB,
             attrs as CFDictionary,
             &pixelBuffer

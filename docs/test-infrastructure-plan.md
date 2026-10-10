@@ -2,7 +2,7 @@
 
 Status: simulator execution verified on October 9, 2026, with Xcode 27.0 and the iOS 27.0 simulator runtime.
 
-The latest combined simulator run executed **88 tests: 85 passed, 3 GPU graph tests skipped, 0 failures**. The three graph tests skip deliberately on the simulator and ran successfully in the native Mac suite: **11 tests passed, no skips or failures**. The separate opt-in performance test was deliberately excluded. Simulator result bundle: `build/concurrent-encoder-gpu-final.xcresult`; log: `build/concurrent-encoder-gpu-final.log`. Native log: `build/native-gpu-mutations.log` (all ignored by Git).
+The latest combined simulator run executed **93 tests: 90 passed, 3 GPU graph tests skipped, 0 failures**. The three graph tests skip deliberately on the simulator and ran successfully in the earlier native Mac suite: **11 tests passed, no skips or failures**. The separate opt-in performance test was deliberately excluded. Simulator result bundle: `build/image-preprocessing-final.xcresult`; log: `build/image-preprocessing-final.log`. Native log: `build/native-gpu-mutations.log` (all ignored by Git).
 
 From the repository folder, choose a simulator returned by `xcrun simctl list devices available` and run:
 
@@ -33,6 +33,8 @@ Twelve `PhotoSearchModelTests`/`SearchReliabilityTests` now cover analytic CPU c
 Six further model-contract tests cover fixed-context boundaries, start/end markers, missing special tokens, zero-padding fallback, malformed token shapes, and invalid integer IDs. The existing bundled S4 prediction test now also compares a long prompt with explicit EOS-preserving token input; see [the parity guide](parity-gates.md#fixed-context-text-input). Independent tokenizer/vector parity remains open.
 
 Five additional image-output tests exercise the shared single/batch runtime validator using synthetic feature providers at 512/768/1152 dimensions. They cover expected feature names, scalar types, vector shapes/dimensions, finite/nonzero norms, extreme finite values, exact batch counts, and rejection of invalid members without partial results. The encoder returns empty batches before predicting. These checks do not supply independent image preprocessing/model parity evidence.
+
+Five image-input/ownership tests now cover unsupported filter/pixel/aspect contracts before loading or rendering, actual 256/384 px Core Image rendering through the shared single/batch input helper, invalid pool geometry, retained buffers through flushing, and strided output copying with independent ownership and source release. All 29 model-contract tests passed. See [the preprocessing and buffer guide](image-preprocessing-validation.md) for reproduced failures and coverage limits.
 
 The suite still needs real Photos permission/iCloud walkthroughs, atomic interrupted storage recovery coverage, independent model parity fixtures, and physical-iOS CPU/GPU ranking comparisons. Native Mac component ranking checks now pass; Float32 graph accumulation latency and transient memory still require measurement. The installed simulator crashed inside Apple's GPU graph code in an earlier performance run; use a physical device for GPU validation. The physical iPhone benchmark is described in [the performance guide](performance-measurement.md).
 

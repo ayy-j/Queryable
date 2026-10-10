@@ -2,6 +2,7 @@ import XCTest
 import CoreML
 import CoreVideo
 import CoreGraphics
+import UIKit
 @testable import Queryable
 
 final class EmbeddingModelSpecTests: XCTestCase {
@@ -181,6 +182,126 @@ final class EmbeddingModelSpecTests: XCTestCase {
 
         XCTAssertNotNil(first)
         XCTAssertTrue(first === second, "Pools must be cached per size and pixel format")
+        XCTAssertFalse(first === ImgEncoder.pixelBufferPool(size: CGSize(width: 256, height: 256), pixelFormat: kCVPixelFormatType_32ARGB))
+        XCTAssertFalse(first === ImgEncoder.pixelBufferPool(size: size, pixelFormat: kCVPixelFormatType_32BGRA))
+    }
+
+    func testImagePreprocessingRejectsUnsupportedContractsBeforeModelLoad() throws {
+        for preprocessing in [
+            ImagePreprocessing(resizeFilter: "CIGaussianBlur", pixelFormat: "32ARGB", aspectRatioMode: "stretch", fingerprint: "blur"),
+            ImagePreprocessing(resizeFilter: "MissingFilter", pixelFormat: "32ARGB", aspectRatioMode: "stretch", fingerprint: "missing"),
+            ImagePreprocessing(resizeFilter: "CILanczosScaleTransform", pixelFormat: "32BGRA", aspectRatioMode: "stretch", fingerprint: "bgra"),
+            ImagePreprocessing(resizeFilter: "CILanczosScaleTransform", pixelFormat: "32ARGB", aspectRatioMode: "crop", fingerprint: "crop")
+        ] {
+            let spec = try makeSpec(imagePreprocessing: preprocessing)
+            XCTAssertThrowsError(try spec.validateImageRuntimePreprocessing()) { error in
+                XCTAssertEqual(error.localizedDescription, EmbeddingModelSpecError.unsupportedImagePreprocessing.localizedDescription)
+            }
+            // Preprocessing must fail before missing artifacts or Core ML loading.
+            XCTAssertThrowsError(try ImgEncoder(resourcesAt: URL(fileURLWithPath: "/missing-model-assets"), spec: spec)) { error in
+                XCTAssertEqual(error.localizedDescription, EmbeddingModelSpecError.unsupportedImagePreprocessing.localizedDescription)
+            }
+            XCTAssertThrowsError(try ImgEncoder.imageFeatureProvider(for: solidImage(.red), spec: spec)) { error in
+                XCTAssertEqual(error.localizedDescription, EmbeddingModelSpecError.unsupportedImagePreprocessing.localizedDescription)
+            }
+        }
+    }
+
+    func testSharedImagePreprocessingRendersModelSizedSingleAndBatchInputs() throws {
+        for (resolution, dimension) in [(256, 512), (256, 768), (384, 1_152)] {
+            let spec = try makeSpec(imageSize: resolution, imageInputName: "pixels", embeddingDimension: dimension)
+            try spec.validateImageRuntimePreprocessing()
+            let colors: [UIColor] = [.red, .green, .blue]
+            let expected: [[UInt8]] = [[255, 255, 0, 0], [255, 0, 255, 0], [255, 0, 0, 255]]
+            // This provider factory is shared by encode(image:) and encodeBatch(images:).
+            let single = try ImgEncoder.imageFeatureProvider(for: solidImage(.red), spec: spec)
+            let batch = MLArrayBatchProvider(array: try colors.map {
+                try ImgEncoder.imageFeatureProvider(for: solidImage($0), spec: spec)
+            })
+            XCTAssertEqual(batch.count, colors.count)
+            for (provider, argb) in [(single, expected[0])] + (0..<batch.count).map({ (batch.features(at: $0), expected[$0]) }) {
+                XCTAssertEqual(provider.featureNames, ["pixels"])
+                let feature = try XCTUnwrap(provider.featureValue(for: spec.imageInputName))
+                XCTAssertEqual(feature.type, .image)
+                let buffer = try XCTUnwrap(feature.imageBufferValue)
+                XCTAssertEqual(CVPixelBufferGetWidth(buffer), resolution)
+                XCTAssertEqual(CVPixelBufferGetHeight(buffer), resolution)
+                XCTAssertEqual(CVPixelBufferGetPixelFormatType(buffer), kCVPixelFormatType_32ARGB)
+                try assertCenterPixel(buffer, equals: argb)
+            }
+        }
+    }
+
+    func testImagePoolsRejectInvalidGeometryBeforeIntegerConversion() {
+        for size in [CGSize(width: 0, height: 256), CGSize(width: 256, height: -1),
+                     CGSize(width: CGFloat.nan, height: 256), CGSize(width: 256, height: CGFloat.infinity),
+                     CGSize(width: 256.5, height: 256), CGSize(width: CGFloat.greatestFiniteMagnitude, height: 256)] {
+            XCTAssertNil(ImgEncoder.pixelBufferPool(size: size, pixelFormat: kCVPixelFormatType_32ARGB))
+        }
+    }
+
+    func testFlushingPoolsKeepsHeldBuffersValidAndAllowsFurtherRendering() throws {
+        for resolution in [256, 384] {
+            let spec = try makeSpec(imageSize: resolution)
+            let held: CVPixelBuffer = try autoreleasepool {
+                let provider = try ImgEncoder.imageFeatureProvider(for: solidImage(.red), spec: spec)
+                return try XCTUnwrap(provider.featureValue(for: spec.imageInputName)?.imageBufferValue)
+            }
+            ImgEncoder.flushBufferPool()
+            let provider = try ImgEncoder.imageFeatureProvider(for: solidImage(.blue), spec: spec)
+            let replacement = try XCTUnwrap(provider.featureValue(for: spec.imageInputName)?.imageBufferValue)
+            XCTAssertFalse(held === replacement, "Recycling must not overwrite a live input buffer")
+            try assertCenterPixel(held, equals: [255, 255, 0, 0])
+            try assertCenterPixel(replacement, equals: [255, 0, 0, 255])
+        }
+    }
+
+    func testDetachedEmbeddingsCopyStridedScalarsAndReleaseSourceStorage() {
+        for dimension in [512, 768, 1_152] {
+            let expected = (1...dimension).map(Float32.init)
+            let source = UnsafeMutablePointer<Float32>.allocate(capacity: dimension * 2)
+            source.initialize(repeating: -1234, count: dimension * 2)
+            for index in 0..<dimension { source[index * 2] = expected[index] }
+            var sourceReleased = false
+            let detached: MLMultiArray = autoreleasepool {
+                let shaped = MLShapedArray<Float32>(
+                    bytesNoCopy: source, shape: [1, dimension], strides: [dimension * 2, 2],
+                    deallocator: .custom { pointer, _ in
+                        pointer.assumingMemoryBound(to: Float32.self).deinitialize(count: dimension * 2)
+                        pointer.deallocate()
+                        sourceReleased = true
+                    }
+                )
+                let copy = ImgEncoder.detachFromIOSurface(shaped)
+                XCTAssertEqual(MLShapedArray<Float32>(converting: copy).scalars, expected)
+                withExtendedLifetime(shaped) { source[0] = 42 }
+                XCTAssertEqual(copy[0].floatValue, 1, "Detached output must own its data")
+                return copy
+            }
+            XCTAssertTrue(sourceReleased, "Keeping the embedding must not retain the prediction's storage")
+            XCTAssertEqual(detached.shape.map { $0.intValue }, [1, dimension])
+            XCTAssertEqual(detached[dimension - 1].floatValue, Float(dimension))
+        }
+    }
+
+    private func solidImage(_ color: UIColor) -> UIImage {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: CGSize(width: 40, height: 20), format: format).image { context in
+            color.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 40, height: 20))
+        }
+    }
+
+    private func assertCenterPixel(_ buffer: CVPixelBuffer, equals expected: [UInt8], file: StaticString = #filePath, line: UInt = #line) throws {
+        XCTAssertEqual(CVPixelBufferLockBaseAddress(buffer, .readOnly), kCVReturnSuccess, file: file, line: line)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let pointer = try XCTUnwrap(CVPixelBufferGetBaseAddress(buffer), file: file, line: line).assumingMemoryBound(to: UInt8.self)
+        let offset = CVPixelBufferGetHeight(buffer) / 2 * CVPixelBufferGetBytesPerRow(buffer) + CVPixelBufferGetWidth(buffer) / 2 * 4
+        for component in 0..<4 {
+            XCTAssertLessThanOrEqual(abs(Int(pointer[offset + component]) - Int(expected[component])), 2, file: file, line: line)
+        }
     }
 
     func testS4ContractCanBeDescribedForArtifactGatedRegistration() throws {
@@ -401,6 +522,8 @@ final class EmbeddingModelSpecTests: XCTestCase {
         modelID: String = "test-model",
         revision: String = "v1",
         imageSize: Int = 256,
+        imagePreprocessing: ImagePreprocessing? = nil,
+        imageInputName: String = "colorImage",
         embeddingDimension: Int = 512,
         contextLength: Int = 77,
         textInputType: ModelFeatureType = .multiArrayFloat32,
@@ -413,7 +536,7 @@ final class EmbeddingModelSpecTests: XCTestCase {
             revision: revision,
             imageModelName: "image.mlmodelc",
             textModelName: "text.mlmodelc",
-            imageInputName: "colorImage",
+            imageInputName: imageInputName,
             imageInputType: .image,
             imageOutputName: "embOutput",
             imageOutputType: .multiArrayFloat32,
@@ -422,7 +545,7 @@ final class EmbeddingModelSpecTests: XCTestCase {
             textOutputName: "text_embeddings",
             textOutputType: .multiArrayFloat32,
             imageSize: imageSize,
-            imagePreprocessing: ImagePreprocessing(
+            imagePreprocessing: imagePreprocessing ?? ImagePreprocessing(
                 resizeFilter: "CILanczosScaleTransform",
                 pixelFormat: "32ARGB",
                 aspectRatioMode: "stretch",
