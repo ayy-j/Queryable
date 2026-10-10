@@ -27,7 +27,7 @@ For more details, please refer to my blog: [Run CLIP on iPhone to Search Photos]
 
 [2024-09-01]: Now supports Apple's [MobileCLIP](https://github.com/apple/ml-mobileclip).
 
-You can download the exported `TextEncoder_mobileCLIP_s2.mlmodelc` and `ImageEncoder_mobileCLIP_s2.mlmodelc` from [Google Drive](https://drive.google.com/drive/folders/12ze3UcqrXt9qeySGh_j_zWE-PWRDTzJv?usp=drive_link). Currently we use `s2` model as the default model, which balances both efficiency & precision.
+The repository retains a MobileCLIP-S2 compatibility spec, while current app builds select MobileCLIP2-S4 by default. See [model setup](Queryable/Queryable/CoreMLModels/README.md) for S4's required artifacts.
 
 ## [PicQuery](https://github.com/greyovo/PicQuery)(Android)
 
@@ -39,17 +39,17 @@ The Android version([Code](https://github.com/greyovo/PicQuery)) developed by [@
 
 ## Run on Xcode
 
-The current app requires `TextEncoder_mobileCLIP2_s4.mlmodelc` and `ImageEncoder_mobileCLIP2_s4.mlmodelc`. The compiled model bundles are git-ignored and must be supplied separately.
+The app's default model is MobileCLIP2-S4, which requires `TextEncoder_mobileCLIP2_s4.mlmodelc` and `ImageEncoder_mobileCLIP2_s4.mlmodelc`. The compiled model bundles are git-ignored and must be supplied separately.
 
 Keep the complete bundles in the repo's top-level `models/` directory or `Queryable/Queryable/CoreMLModels/`, then build in Xcode. The **Bundle Core ML Models** build phase packages them automatically, including after cleaning the build folder or deleting Derived Data. It stops the build if a required model or tokenizer asset is missing. See [model setup](Queryable/Queryable/CoreMLModels/README.md) for details.
 
 ## Model and index compatibility
 
-The app uses MobileCLIP2-S4 as its default. Its immutable `EmbeddingModelSpec` records the model ID and revision, paired image/text towers, feature names and types, image preprocessing parameters and fingerprint, embedding dimension, tokenizer kind/assets/context, normalization, and storage scalar type. S4 uses 256-pixel images, 768-dimensional Float32 embeddings, the `colorImage` / `embOutput` image features, Int32 `input_tokens` / Float32 `text_embeddings` text features, and the `vocab.json` / `merges.txt` CLIP BPE resources. The model bundles are not included in git; encoder initialization checks their Core ML feature types and shapes against the spec when supplied.
+The app selects MobileCLIP2-S4 as its default model. This runtime default does not mean the S4 release gate in [Issue #18](https://github.com/ayy-j/Queryable/issues/18) has passed; retrieval, parity, licensing, delivery, and integrated device-acceptance evidence remain required. The immutable `EmbeddingModelSpec` records the model ID and revision, paired image/text towers, feature names and types, image preprocessing parameters and fingerprint, embedding dimension, tokenizer kind/assets/context, normalization, and storage scalar type. S4 uses 256-pixel images, 768-dimensional Float32 embeddings, the `colorImage` / `embOutput` image features, Int32 `input_tokens` / Float32 `text_embeddings` text features, and the `vocab.json` / `merges.txt` CLIP BPE resources. The model bundles are not included in git; encoder initialization checks their Core ML feature types and shapes against the spec when supplied.
 
 `EmbeddingModelSpec.checkpointHash(resourcesAt:)` hashes both towers and every tokenizer asset together with the compatibility contract. Equal vector dimensions do not make indexes interchangeable: model ID/revision, both tower resources and feature contracts, preprocessing, tokenizer configuration/assets, normalization, and storage type all contribute to compatibility. Persistent indexes remain Float32; other storage types must not be registered until the storage and retrieval paths support them.
 
-`EmbeddingModelRegistry` includes S2 and S4 presets by default. Register another currently supported model only after supplying a stable revision and verifying that both compiled Core ML towers and tokenizer assets are present and match the declared feature names, types, image size, embedding dimensions, and text context length. `EmbeddingModelSpec.sigLIPSo400m` can describe the 384-pixel, 64-token Gemma-tokenizer So400m and optional 1536-dimensional variant, but Gemma specs remain declarative: no Gemma tokenizer or SigLIP inference runtime is implemented or accepted by the runtime registry.
+`EmbeddingModelRegistry` contains S2 and S4 presets; the app selects S4 by default. Register another runtime model only after supplying a stable revision and verifying that both compiled Core ML towers and tokenizer assets are present and match the declared feature names, types, image size, embedding dimensions, and text context length. `EmbeddingModelSpec.sigLIPSo400m` can describe the 384-pixel, 64-token Gemma-tokenizer So400m and optional 1536-dimensional variant, but Gemma specs remain declarative: no Gemma tokenizer or SigLIP inference runtime is implemented or accepted by the runtime registry.
 
 Embedding indexes are stored separately per model and checkpoint fingerprint in QEMB v2 files. Each header identifies the model, a SHA-256 fingerprint of its towers and tokenizer assets, vector dimension and scalar type, preprocessing fingerprint, normalization state, and record count. Untagged legacy indexes and indexes with incompatible metadata are rejected and must be rebuilt because their checkpoint identity cannot be verified. Review model checkpoint terms and distribution rights before bundling or distributing any model artifacts.
 

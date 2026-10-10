@@ -20,7 +20,7 @@ public struct TextEncoder {
     var model: MLModel
     
     init(resourcesAt baseURL: URL,
-         spec: EmbeddingModelSpec = .mobileCLIP2S4,
+         spec: EmbeddingModelSpec = .appDefault,
          configuration config: MLModelConfiguration = .init()
     ) throws {
         guard spec.tokenizerKind == .clipBPE,

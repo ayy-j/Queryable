@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B60000010000000000000001 /* SimilarityValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000020000000000000001 /* SimilarityValidationTests.swift */; };
+		B50000010000000000000001 /* EmbeddingStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000020000000000000001 /* EmbeddingStoreTests.swift */; };
 		B40000010000000000000001 /* IndexingReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000020000000000000001 /* IndexingReliabilityTests.swift */; };
 		B30000010000000000000001 /* PerformanceMeasurementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000020000000000000001 /* PerformanceMeasurementTests.swift */; };
 		94E9174B2A5A45C000324937 /* QueryableApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E9174A2A5A45C000324937 /* QueryableApp.swift */; };
@@ -65,6 +67,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B60000020000000000000001 /* SimilarityValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimilarityValidationTests.swift; sourceTree = "<group>"; };
+		B50000020000000000000001 /* EmbeddingStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddingStoreTests.swift; sourceTree = "<group>"; };
 		B40000020000000000000001 /* IndexingReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexingReliabilityTests.swift; sourceTree = "<group>"; };
 		B30000020000000000000001 /* PerformanceMeasurementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceMeasurementTests.swift; sourceTree = "<group>"; };
 		4D3B1D632A5F95300004C06F /* CoreMLModels */ = {isa = PBXFileReference; lastKnownFileType = folder; path = CoreMLModels; sourceTree = "<group>"; };
@@ -324,6 +328,8 @@
 			isa = PBXGroup;
 			children = (
 				B40000020000000000000001 /* IndexingReliabilityTests.swift */,
+				B50000020000000000000001 /* EmbeddingStoreTests.swift */,
+				B60000020000000000000001 /* SimilarityValidationTests.swift */,
 				B30000020000000000000001 /* PerformanceMeasurementTests.swift */,
 				DE4D62612AECD3CF007AB439 /* EmbeddingModelSpecTests.swift */,
 				PA0000062AECD3CF007AB439 /* ParityMetricsTests.swift */,
@@ -520,6 +526,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				B40000010000000000000001 /* IndexingReliabilityTests.swift in Sources */,
+				B50000010000000000000001 /* EmbeddingStoreTests.swift in Sources */,
+				B60000010000000000000001 /* SimilarityValidationTests.swift in Sources */,
 				B30000010000000000000001 /* PerformanceMeasurementTests.swift in Sources */,
 				DE4D62602AECD3CF007AB439 /* EmbeddingModelSpecTests.swift in Sources */,
 				PA0000072AECD3CF007AB439 /* ParityMetricsTests.swift in Sources */,

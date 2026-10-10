@@ -245,6 +245,9 @@ struct EmbeddingModelSpec: Equatable, Sendable {
         storageScalarType: "float32"
     )
 
+    /// The model selected for new app sessions and indexes by default.
+    static let appDefault = mobileCLIP2S4
+
     static func sigLIPSo400m(
         revision: String,
         imageModelName: String,

@@ -39,7 +39,7 @@ The review found paths where photo loading returns before the image is ready, fa
 
 ## What remains postponed
 
-Respect the recorded [benchmark deferral](https://github.com/ayy-j/Queryable/issues/6#issuecomment-6031023369). Reliability, installation, and correctness work can continue now. The formal S4 release decision remains open until measured comparisons are available; S4 being the current default is not evidence that those checks passed.
+Respect the recorded [benchmark deferral](https://github.com/ayy-j/Queryable/issues/6#issuecomment-6031023369). Reliability, installation, and correctness work can continue now. MobileCLIP2-S4 is the selected app default, but the formal S4 release decision remains open until measured comparisons and the other acceptance evidence are available. Selecting S4 by default is not evidence that those checks passed.
 
 SigLIP remains later work. Under the current issue criteria, postponing it today does not complete its evidence-based decision. Any reduction in that scope needs to be recorded explicitly.
 

@@ -11,7 +11,7 @@ import Accelerate
 
 struct PhotoSearcherModel {
     private var texEncoder: TextEncoder?
-    private(set) var spec: EmbeddingModelSpec = .mobileCLIP2S4
+    private(set) var spec: EmbeddingModelSpec = .appDefault
 
     mutating func load_text_encoder(resourcesAt resourceURL: URL, spec: EmbeddingModelSpec) throws {
         // TODO: move the pipeline creation to background task because it's heavy

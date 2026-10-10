@@ -11,6 +11,7 @@ public enum ParityMetrics {
         case dimensionMismatch(expected: Int, actual: Int)
         case emptyVector
         case nonFiniteValue
+        case undefinedRankCorrelation
     }
 
     /// L2 norm of a vector. Throws on empty input or non-finite values.
@@ -73,8 +74,23 @@ public enum ParityMetrics {
         }
         guard a.count >= 2 else { throw ParityError.emptyVector }
         for v in a + b { guard v.isFinite else { throw ParityError.nonFiniteValue } }
-        let ra = ranks(of: a).map(Double.init)
-        let rb = ranks(of: b).map(Double.init)
+        func averageRanks(_ scores: [Float]) -> [Double] {
+            let order = scores.indices.sorted { scores[$0] > scores[$1] }
+            var result = [Double](repeating: 0, count: scores.count)
+            var start = 0
+            while start < order.count {
+                var end = start + 1
+                while end < order.count && scores[order[start]] == scores[order[end]] {
+                    end += 1
+                }
+                let rank = Double(start + end - 1) / 2
+                for position in start..<end { result[order[position]] = rank }
+                start = end
+            }
+            return result
+        }
+        let ra = averageRanks(a)
+        let rb = averageRanks(b)
         let n = Double(a.count)
         let meanA = ra.reduce(0, +) / n
         let meanB = rb.reduce(0, +) / n
@@ -88,7 +104,7 @@ public enum ParityMetrics {
             va += da * da
             vb += db * db
         }
-        guard va > 0 && vb > 0 else { return 1.0 }
+        guard va > 0 && vb > 0 else { throw ParityError.undefinedRankCorrelation }
         return Float(cov / (sqrt(va) * sqrt(vb)))
     }
 
@@ -174,7 +190,7 @@ public enum ParityGate {
         var failures = [String]()
         let distance: Float
         do {
-            try ParityMetrics.validateVector(reference, expectedDimension: reference.count)
+            try ParityMetrics.validateVector(reference, expectedDimension: reference.count, normTolerance: tolerances.normTolerance)
             try ParityMetrics.validateVector(candidate, expectedDimension: reference.count)
             distance = try ParityMetrics.cosineDistance(reference, candidate)
         } catch {
@@ -189,6 +205,9 @@ public enum ParityGate {
             failures.append("cosine-distance \(distance) exceeds \(tolerances.maxCosineDistance)")
         }
         var correlation: Float?
+        if (referenceScores == nil) != (candidateScores == nil) {
+            failures.append("rank-correlation requires both reference and candidate scores")
+        }
         if let refScores = referenceScores, let candScores = candidateScores {
             do {
                 correlation = try ParityMetrics.spearmanRankCorrelation(refScores, candScores)

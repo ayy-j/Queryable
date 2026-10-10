@@ -98,7 +98,7 @@ class PhotoSearcher: ObservableObject {
         }
     }
 
-    init(modelSpec: EmbeddingModelSpec = .mobileCLIP2S4,
+    init(modelSpec: EmbeddingModelSpec = .appDefault,
          indexingOperations: PhotoIndexingOperations? = nil) {
         self.modelSpec = modelSpec
         self.indexingOperations = indexingOperations

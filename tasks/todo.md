@@ -39,6 +39,8 @@ Companion to the [plain-language plan](/Users/abackman/Queryable/tasks/plan.md).
 
 ### 4. Protect saved work through interruption
 
+**October 9 storage-validation slice:** added strict physical record-count validation, explicit little-endian fields, invalid ID/nonfinite-value rejection, and nine isolated storage tests covering restart, replacement, deletion, compaction, and corruption. All 54 ordinary simulator tests passed (`build/storage-validation.xcresult`); the opt-in performance test was excluded. See [format and recovery limits](../docs/qemb-v2-format.md). Atomic crash recovery and generation-bound sidecars remain open; this does not complete item 4 or issue #8.
+
 - [ ] Test and fix save/load, additions, deletions, damaged files, record counts, and interrupted saves; preserve the last valid data.
 - [ ] Resume only successfully committed work, including interruption while combining saved batches and deleting photos.
 
@@ -47,6 +49,8 @@ Companion to the [plain-language plan](/Users/abackman/Queryable/tasks/plan.md).
 **Depends on:** 1, 3. **Issues:** #8, #13. **Scope:** medium, delivered as separate save/recovery changes. **Likely files:** `EmbeddingStore.swift`, `PhotoSearcher.swift`, new storage/recovery tests, storage-format documentation.
 
 ### 5. Validate search and handle model errors safely
+
+**October 9 GPU-validation slice:** build/add/query paths now reject wrong types/shapes, noncontiguous Float32 layouts, nonfinite values, and zero/near-zero norms before pointer access or graph execution. Double normalization avoids overflow on large finite vectors. Seven new tests cover 512/768/1152/1536 dimensions; all 61 ordinary simulator tests passed with no skips (`build/search-validation.xcresult`), excluding the opt-in performance test. See [scope and remaining work](../docs/search-vector-validation.md). CPU fallback, text-error handling, model identity, and device ranking comparisons remain open; item 5 and issue #10 are incomplete.
 
 - [ ] Reject invalid numbers, wrong shapes, unsupported memory layouts, and unusable blank search data before ranking; handle text-model errors without crashing.
 - [ ] Compare GPU and CPU rankings at every required model size, including additions, deletions, empty indexes, and similar-photo searches.
@@ -143,7 +147,7 @@ Companion to the [plain-language plan](/Users/abackman/Queryable/tasks/plan.md).
 ### 14. Record the S4 approval or hold decision
 
 - [ ] Perform the integrated offline, recovery, rollback, large-library, and device checks against the recorded criteria.
-- [ ] Record the decision in #18 and reconcile the current S4 default and documentation with that decision.
+- [ ] Record the evidence-based decision in #18. Keep documentation consistent with S4 as the selected app default while clearly stating that the release gate remains open until its acceptance evidence is complete.
 
 **Verify:** all required evidence is linked; absent benchmark evidence keeps the gate open. The user confirmed on October 9 that the current model loads and works on their phone and Mac; keep the broader quality, resource, recovery, and fresh-install checks outstanding. Do not equate a successful build or current default with release approval.
 

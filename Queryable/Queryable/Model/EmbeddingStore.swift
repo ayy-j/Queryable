@@ -8,6 +8,8 @@
 //  File format (v2):
 //    Header: "QEMB" + version UInt32 + record count UInt64 + metadata length + JSON metadata
 //    Record: idLength UInt16 + id UTF-8 bytes + embedding Float32[model dimension]
+//    All integers and Float32 bit patterns use little-endian byte order.
+//    Count includes physical main + journal records, including replaced/deleted IDs.
 //
 //  Journal file: same record format, no header (append-only for new embeddings)
 //  Tombstone file: newline-separated IDs of deleted embeddings
@@ -15,7 +17,6 @@
 
 import Foundation
 import CoreML
-import Accelerate
 
 enum EmbeddingStoreError: Error {
     /// The store has not been created for the active model spec yet.
@@ -86,8 +87,10 @@ class EmbeddingStore: @unchecked Sendable {
         let mainPath = baseDir.appendingPathComponent(mainFileName)
         guard let mainHandle = try? FileHandle(forReadingFrom: mainPath) else { return nil }
         defer { try? mainHandle.close() }
-        guard let header = try? readHeader(from: mainHandle),
-              readRecordsFromBinary(mainHandle, startingAt: header.recordsOffset, into: &embeddings) else {
+        guard let header = try? readHeader(from: mainHandle) else { return nil }
+        var remainingRecords = header.recordCount
+        guard readRecordsFromBinary(mainHandle, startingAt: header.recordsOffset,
+                                    remainingRecords: &remainingRecords, into: &embeddings) else {
             return nil
         }
 
@@ -96,8 +99,12 @@ class EmbeddingStore: @unchecked Sendable {
         if FileManager.default.fileExists(atPath: journalPath.path) {
             guard let journalHandle = try? FileHandle(forReadingFrom: journalPath) else { return nil }
             defer { try? journalHandle.close() }
-            guard readRecordsFromBinary(journalHandle, startingAt: 0, into: &embeddings) else { return nil }
+            guard readRecordsFromBinary(journalHandle, startingAt: 0,
+                                        remainingRecords: &remainingRecords, into: &embeddings) else { return nil }
         }
+
+        // A missing complete record is corruption too, even when EOF is aligned.
+        guard remainingRecords == 0 else { return nil }
 
         // Apply tombstones (deletions)
         let tombstones = loadTombstones()
@@ -259,9 +266,9 @@ class EmbeddingStore: @unchecked Sendable {
         guard metadataData.count <= Int(UInt32.max) else { throw EmbeddingStoreError.metadataTooLarge(metadataData.count) }
 
         var data = Data(headerMagic)
-        var version = formatVersion
-        var count = recordCount
-        var metadataLength = UInt32(metadataData.count)
+        var version = formatVersion.littleEndian
+        var count = recordCount.littleEndian
+        var metadataLength = UInt32(metadataData.count).littleEndian
         data.append(Data(bytes: &version, count: MemoryLayout<UInt32>.size))
         data.append(Data(bytes: &count, count: MemoryLayout<UInt64>.size))
         data.append(Data(bytes: &metadataLength, count: MemoryLayout<UInt32>.size))
@@ -299,7 +306,7 @@ class EmbeddingStore: @unchecked Sendable {
         defer { try? handle.close() }
         guard let header = try? readHeader(from: handle),
               header.recordCount <= UInt64.max - increment else { return false }
-        var count = header.recordCount + increment
+        var count = (header.recordCount + increment).littleEndian
         do {
             try handle.seek(toOffset: 8)
             try handle.write(contentsOf: Data(bytes: &count, count: MemoryLayout<UInt64>.size))
@@ -313,35 +320,38 @@ class EmbeddingStore: @unchecked Sendable {
 
     private func isValid(_ embeddings: [String: MLMultiArray]) -> Bool {
         embeddings.allSatisfy {
+            !$0.key.isEmpty &&
+            !$0.key.contains(where: { $0.isNewline }) &&
             $0.key.utf8.count <= Int(UInt16.max) &&
             $0.value.dataType == .float32 &&
-            $0.value.count == spec.embeddingDimension
+            $0.value.count == spec.embeddingDimension &&
+            MLShapedArray<Float32>(converting: $0.value).scalars.allSatisfy(\.isFinite)
         }
     }
 
     private func recordData(id: String, mlArray: MLMultiArray) -> Data {
         var data = Data()
         let idBytes = Array(id.utf8)
-        var idLen = UInt16(idBytes.count)
+        var idLen = UInt16(idBytes.count).littleEndian
         data.append(Data(bytes: &idLen, count: 2))
         data.append(contentsOf: idBytes)
 
         // Write embedding as raw Float32 bytes
         let shaped = MLShapedArray<Float32>(converting: mlArray)
         let scalars = shaped.scalars
-        let norm = sqrt(vDSP.sumOfSquares(scalars))
+        let norm = sqrt(scalars.reduce(0.0) { $0 + Double($1) * Double($1) })
         let values = spec.normalizeEmbeddings && norm > 1e-8
-            ? scalars.map { $0 / norm }
+            ? scalars.map { Float32(Double($0) / norm) }
             : scalars
-        values.withUnsafeBufferPointer { ptr in
-            data.append(UnsafeBufferPointer(start: ptr.baseAddress, count: ptr.count))
-        }
+        let bits = values.map { $0.bitPattern.littleEndian }
+        bits.withUnsafeBytes { data.append(contentsOf: $0) }
         return data
     }
 
     private func readRecordsFromBinary(
         _ handle: FileHandle,
         startingAt startOffset: Int,
+        remainingRecords: inout UInt64,
         into embeddings: inout [String: MLMultiArray]
     ) -> Bool {
         do {
@@ -349,17 +359,23 @@ class EmbeddingStore: @unchecked Sendable {
             while true {
                 let idLengthData = try readExactly(2, from: handle)
                 if idLengthData.isEmpty { break }
-                guard idLengthData.count == 2,
-                      let idLen = readUInt16(idLengthData, at: 0) else { return false }
+                guard remainingRecords > 0, idLengthData.count == 2,
+                      let idLen = readUInt16(idLengthData, at: 0), idLen > 0 else { return false }
                 let idData = try readExactly(Int(idLen), from: handle)
                 guard idData.count == Int(idLen),
-                      let id = String(data: idData, encoding: .utf8) else { return false }
+                      let id = String(data: idData, encoding: .utf8),
+                      !id.contains(where: { $0.isNewline }) else { return false }
                 let embeddingData = try readExactly(recordEmbeddingSize, from: handle)
                 guard embeddingData.count == recordEmbeddingSize else { return false }
                 var floats = [Float32](repeating: 0, count: spec.embeddingDimension)
-                floats.withUnsafeMutableBufferPointer { dest in
-                    _ = embeddingData.copyBytes(to: UnsafeMutableRawBufferPointer(dest))
+                embeddingData.withUnsafeBytes { bytes in
+                    for index in floats.indices {
+                        let bits = bytes.loadUnaligned(fromByteOffset: index * 4, as: UInt32.self)
+                        floats[index] = Float32(bitPattern: UInt32(littleEndian: bits))
+                    }
                 }
+                guard floats.allSatisfy(\.isFinite) else { return false }
+                remainingRecords -= 1
 
                 let shaped = MLShapedArray<Float32>(scalars: floats, shape: [1, spec.embeddingDimension])
                 embeddings[id] = MLMultiArray(shaped)
@@ -404,17 +420,17 @@ class EmbeddingStore: @unchecked Sendable {
 
     private func readUInt16(_ data: Data, at offset: Int) -> UInt16? {
         guard offset + MemoryLayout<UInt16>.size <= data.count else { return nil }
-        return data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt16.self) }
+        return data.withUnsafeBytes { UInt16(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt16.self)) }
     }
 
     private func readUInt32(_ data: Data, at offset: Int) -> UInt32? {
         guard offset + MemoryLayout<UInt32>.size <= data.count else { return nil }
-        return data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self) }
+        return data.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self)) }
     }
 
     private func readUInt64(_ data: Data, at offset: Int) -> UInt64? {
         guard offset + MemoryLayout<UInt64>.size <= data.count else { return nil }
-        return data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self) }
+        return data.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self)) }
     }
 
     private func loadTombstones() -> Set<String> {

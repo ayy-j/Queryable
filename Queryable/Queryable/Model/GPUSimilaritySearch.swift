@@ -57,7 +57,7 @@ class GPUSimilaritySearch {
     /// Build the GPU index from the in-memory embedding dictionary.
     /// Embeddings are L2-normalized and converted to Float16.
     func buildIndex(from embeddings: [String: MLMultiArray]) throws {
-        try validate(embeddings)
+        let norms = try validate(embeddings)
         let startTime = Date()
         let n = embeddings.count
         guard n > 0 else {
@@ -75,6 +75,7 @@ class GPUSimilaritySearch {
             newIDs.append(id)
             writeNormalizedEmbedding(
                 mlArray,
+                norm: norms[id]!,
                 to: destination.advanced(by: row * embeddingDim),
                 using: &normalizedBuf
             )
@@ -89,7 +90,7 @@ class GPUSimilaritySearch {
 
     /// Add new embeddings to the existing index.
     func addEmbeddings(_ newEmbeddings: [String: MLMultiArray]) throws {
-        try validate(newEmbeddings)
+        let norms = try validate(newEmbeddings)
         guard !newEmbeddings.isEmpty else { return }
         let (newCount, countOverflow) = ids.count.addingReportingOverflow(newEmbeddings.count)
         guard !countOverflow else { throw SimilaritySearchError.bufferAllocationFailed }
@@ -108,6 +109,7 @@ class GPUSimilaritySearch {
             newIDs.append(id)
             writeNormalizedEmbedding(
                 mlArray,
+                norm: norms[id]!,
                 to: destination.advanced(by: row * embeddingDim),
                 using: &normalizedBuf
             )
@@ -174,36 +176,30 @@ class GPUSimilaritySearch {
 
     private func writeNormalizedEmbedding(
         _ embedding: MLMultiArray,
+        norm: Double,
         to destination: UnsafeMutablePointer<Float16>,
         using normalizedBuffer: inout [Float32]
     ) {
         let source = embedding.dataPointer.assumingMemoryBound(to: Float32.self)
-        var sumSquares: Float32 = 0
-        vDSP_svesq(source, 1, &sumSquares, vDSP_Length(embeddingDim))
-        let norm = sqrt(sumSquares)
-
-        if norm > 1e-8 {
-            var inverseNorm = 1.0 / norm
-            vDSP_vsmul(source, 1, &inverseNorm, &normalizedBuffer, 1, vDSP_Length(embeddingDim))
-            normalizedBuffer.withUnsafeBufferPointer { sourceBuffer in
-                var sourceImage = vImage_Buffer(
-                    data: UnsafeMutableRawPointer(mutating: sourceBuffer.baseAddress!),
-                    height: 1,
-                    width: vImagePixelCount(embeddingDim),
-                    rowBytes: embeddingDim * MemoryLayout<Float32>.size
-                )
-                var destinationImage = vImage_Buffer(
-                    data: UnsafeMutableRawPointer(destination),
-                    height: 1,
-                    width: vImagePixelCount(embeddingDim),
-                    rowBytes: embeddingDim * MemoryLayout<Float16>.size
-                )
-                vImageConvert_PlanarFtoPlanar16F(&sourceImage, &destinationImage, 0)
-            }
-        } else {
-            for index in 0..<embeddingDim {
-                destination[index] = 0
-            }
+        // Validation has established a finite, nonzero norm and contiguous layout.
+        // Double accumulation/division avoids Float32 overflow for finite inputs.
+        for index in 0..<embeddingDim {
+            normalizedBuffer[index] = Float32(Double(source[index]) / norm)
+        }
+        normalizedBuffer.withUnsafeBufferPointer { sourceBuffer in
+            var sourceImage = vImage_Buffer(
+                data: UnsafeMutableRawPointer(mutating: sourceBuffer.baseAddress!),
+                height: 1,
+                width: vImagePixelCount(embeddingDim),
+                rowBytes: embeddingDim * MemoryLayout<Float32>.size
+            )
+            var destinationImage = vImage_Buffer(
+                data: UnsafeMutableRawPointer(destination),
+                height: 1,
+                width: vImagePixelCount(embeddingDim),
+                rowBytes: embeddingDim * MemoryLayout<Float16>.size
+            )
+            vImageConvert_PlanarFtoPlanar16F(&sourceImage, &destinationImage, 0)
         }
     }
 
@@ -247,26 +243,16 @@ class GPUSimilaritySearch {
     /// Compute similarity scores for a query embedding against all stored embeddings.
     /// Returns [photoID: similarity_score].
     func search(queryEmbedding: MLShapedArray<Float32>) throws -> [String: Float] {
-        guard queryEmbedding.scalarCount == embeddingDim else {
-            throw SimilaritySearchError.dimensionMismatch(expected: embeddingDim, actual: queryEmbedding.scalarCount)
-        }
+        let queryNorm = try SimilarityVectorValidation.norm(of: queryEmbedding, dimension: embeddingDim)
         let n = ids.count
-        guard n > 0,
-              let cached = cachedGraph,
+        guard n > 0 else { return [:] }
+        guard let cached = cachedGraph,
               let matBuf = matrixBuffer,
               cached.n == n else {
-            return [:]
+            throw SimilaritySearchError.indexUnavailable
         }
 
-        // L2-normalize query and convert to Float16
-        let queryScalars = queryEmbedding.scalars
-        let queryNorm = sqrt(vDSP.sumOfSquares(queryScalars))
-        var queryFloat16 = [Float16](repeating: 0, count: embeddingDim)
-        if queryNorm > 1e-8 {
-            for j in 0..<embeddingDim {
-                queryFloat16[j] = Float16(queryScalars[j] / queryNorm)
-            }
-        }
+        let queryFloat16 = queryEmbedding.scalars.map { Float16(Double($0) / queryNorm) }
 
         // Create tensor data from pre-allocated matrix buffer (no copy)
         let matrixShape: [NSNumber] = [NSNumber(value: n), NSNumber(value: embeddingDim)]
@@ -296,11 +282,17 @@ class GPUSimilaritySearch {
             targetOperations: nil
         )
 
-        guard let resultTensorData = results[cached.resultTensor] else { return [:] }
+        guard let resultTensorData = results[cached.resultTensor] else {
+            throw SimilaritySearchError.resultsUnavailable
+        }
 
         // Read results back as Float16
         var resultFloat16 = [Float16](repeating: 0, count: n)
         resultTensorData.mpsndarray().readBytes(&resultFloat16, strideBytes: nil)
+
+        guard resultFloat16.allSatisfy(\.isFinite) else {
+            throw SimilaritySearchError.nonFiniteVector
+        }
 
         // Build result dictionary
         var simDict = [String: Float](minimumCapacity: n)
@@ -311,21 +303,66 @@ class GPUSimilaritySearch {
         return simDict
     }
 
-    private func validate(_ embeddings: [String: MLMultiArray]) throws {
+    private func validate(_ embeddings: [String: MLMultiArray]) throws -> [String: Double] {
+        var norms = [String: Double](minimumCapacity: embeddings.count)
         for (id, embedding) in embeddings {
-            guard embedding.dataType == .float32, embedding.count == embeddingDim else {
-                throw SimilaritySearchError.invalidEmbedding(
-                    id: id,
-                    expected: embeddingDim,
-                    actual: embedding.count
-                )
-            }
+            norms[id] = try SimilarityVectorValidation.norm(of: embedding, dimension: embeddingDim, id: id)
         }
+        return norms
     }
 }
 
-enum SimilaritySearchError: Error {
+/// Validation is independent of Metal so malformed inputs can be checked on every host.
+/// Only [D] and [1,D] contiguous Float32 vectors are supported by the raw-pointer path.
+enum SimilarityVectorValidation {
+    static func norm(of embedding: MLMultiArray, dimension: Int, id: String) throws -> Double {
+        guard embedding.dataType == .float32, embedding.count == dimension else {
+            throw SimilaritySearchError.invalidEmbedding(id: id, expected: dimension, actual: embedding.count)
+        }
+        let shape = embedding.shape.map(\.intValue)
+        let strides = embedding.strides.map(\.intValue)
+        guard (shape == [dimension] || shape == [1, dimension]), strides.last == 1 else {
+            throw SimilaritySearchError.unsupportedLayout
+        }
+        // Do not read dataPointer until scalar type, shape, and strides are validated.
+        let source = embedding.dataPointer.assumingMemoryBound(to: Float32.self)
+        var squares = 0.0
+        for index in 0..<dimension {
+            guard source[index].isFinite else { throw SimilaritySearchError.nonFiniteVector }
+            squares += Double(source[index]) * Double(source[index])
+        }
+        return try checkedNorm(squares)
+    }
+
+    static func norm(of embedding: MLShapedArray<Float32>, dimension: Int) throws -> Double {
+        guard embedding.scalarCount == dimension else {
+            throw SimilaritySearchError.dimensionMismatch(expected: dimension, actual: embedding.scalarCount)
+        }
+        guard embedding.shape == [dimension] || embedding.shape == [1, dimension] else {
+            throw SimilaritySearchError.unsupportedLayout
+        }
+        var squares = 0.0
+        for value in embedding.scalars {
+            guard value.isFinite else { throw SimilaritySearchError.nonFiniteVector }
+            squares += Double(value) * Double(value)
+        }
+        return try checkedNorm(squares)
+    }
+
+    private static func checkedNorm(_ squares: Double) throws -> Double {
+        let norm = sqrt(squares)
+        guard norm > 1e-8 else { throw SimilaritySearchError.zeroNormVector }
+        return norm
+    }
+}
+
+enum SimilaritySearchError: Error, Equatable {
     case dimensionMismatch(expected: Int, actual: Int)
     case invalidEmbedding(id: String, expected: Int, actual: Int)
+    case unsupportedLayout
+    case nonFiniteVector
+    case zeroNormVector
+    case indexUnavailable
+    case resultsUnavailable
     case bufferAllocationFailed
 }
