@@ -135,6 +135,21 @@ final class EmbeddingModelSpecTests: XCTestCase {
         XCTAssertEqual(embedding.shape, [1, spec.embeddingDimension])
         XCTAssertTrue(embedding.scalars.allSatisfy { $0.isFinite })
         XCTAssertTrue(embedding.scalars.contains { $0 != 0 })
+
+        // Analytic IDs for repeated "a": 75 body tokens between BOS and EOS.
+        let longPrompt = String(repeating: "a ", count: 200)
+        let expectedIDs = [49_406] + Array(repeating: 320, count: 75) + [49_407]
+        XCTAssertEqual(try encoder.tokenizer.tokenize(input: longPrompt, contextLength: 77).tokenIDs, expectedIDs)
+        let actual = try encoder.computeTextEmbedding(prompt: longPrompt)
+        let expected = try encoder.encode(ids: expectedIDs)
+        for (value, reference) in zip(actual.scalars, expected.scalars) {
+            XCTAssertEqual(value, reference, accuracy: 1e-6)
+        }
+        for invalidIDs in [Array(expectedIDs.dropLast()), Array(repeating: -1, count: 77), Array(repeating: 49_408, count: 77)] {
+            XCTAssertThrowsError(try encoder.encode(ids: invalidIDs)) { error in
+                XCTAssertEqual(error as? TextEncoder.TextEncodingError, .invalidTokens)
+            }
+        }
     }
 
     func testImageBufferPoolsMatchEachModelResolution() {
@@ -206,6 +221,78 @@ final class EmbeddingModelSpecTests: XCTestCase {
         let message = ModelArtifactError.missingArtifact("ImageEncoder_mobileCLIP_s2.mlmodelc").localizedDescription
         XCTAssertTrue(message.contains("ImageEncoder_mobileCLIP_s2.mlmodelc"))
         XCTAssertTrue(message.contains("drive.google.com"))
+    }
+
+    private var boundaryTokenizer: BPETokenizer {
+        BPETokenizer(merges: [:], vocabulary: [
+            "<|startoftext|>": 11, "<|endoftext|>": 12, "a</w>": 7, "[PAD]": 0
+        ])
+    }
+
+    func testFixedContextTokenizationAtAndBeyondEveryBoundary() throws {
+        for context in [2, 4, 77] {
+            for words in [0, max(0, context - 3), context - 2, context - 1, context * 10] {
+                let (tokens, ids) = try boundaryTokenizer.tokenize(
+                    input: String(repeating: "a ", count: words), contextLength: context)
+                let retained = min(words, context - 2)
+                let expected = [11] + Array(repeating: 7, count: retained) + [12]
+                    + Array(repeating: 0, count: context - retained - 2)
+                XCTAssertEqual(ids, expected, "context \(context), words \(words)")
+                XCTAssertEqual(tokens.count, context)
+                XCTAssertEqual(tokens.first, "<|startoftext|>")
+                XCTAssertEqual(tokens[retained + 1], "<|endoftext|>")
+            }
+        }
+    }
+
+    func testFixedContextRejectsInvalidLengthAndMissingSpecialTokens() {
+        for length in [Int.min, -1, 0, 1] {
+            XCTAssertThrowsError(try boundaryTokenizer.tokenize(input: "a", contextLength: length)) { error in
+                XCTAssertEqual(error as? BPETokenizer.TokenizationError, .invalidContextLength)
+            }
+        }
+        for missing in ["<|startoftext|>", "<|endoftext|>"] {
+            var vocabulary = boundaryTokenizer.vocabulary
+            vocabulary.removeValue(forKey: missing)
+            let tokenizer = BPETokenizer(merges: [:], vocabulary: vocabulary)
+            XCTAssertThrowsError(try tokenizer.tokenize(input: "a", contextLength: 77)) { error in
+                XCTAssertEqual(error as? BPETokenizer.TokenizationError, .missingSpecialToken(missing))
+            }
+        }
+    }
+
+    func testRawTokenizerRemainsUnboundedWhileFixedContextPreservesEndToken() throws {
+        let prompt = String(repeating: "a ", count: 100)
+        let raw = boundaryTokenizer.tokenize(input: prompt, minCount: 77).tokenIDs
+        let fixed = try boundaryTokenizer.tokenize(input: prompt, contextLength: 77).tokenIDs
+        XCTAssertEqual(raw.count, 102)
+        XCTAssertEqual(raw.last, 12)
+        XCTAssertEqual(fixed.count, 77)
+        XCTAssertEqual(Array(fixed.dropLast()), Array(raw.prefix(76)))
+        XCTAssertEqual(fixed.last, 12)
+    }
+
+    func testFixedContextUsesExistingZeroPaddingFallback() throws {
+        let tokenizer = BPETokenizer(merges: [:], vocabulary: ["<|startoftext|>": 11, "<|endoftext|>": 12])
+        XCTAssertEqual(try tokenizer.tokenize(input: "", contextLength: 4).tokenIDs, [11, 12, 0, 0])
+    }
+
+    func testTokenArrayRejectsMismatchedOrOverflowingShapesBeforeAllocation() {
+        for shape in [[], [0], [-1], [1, 3], [2, 2], [Int.max, 2]] {
+            XCTAssertThrowsError(try TextEncoder.tokenArray(ids: [11, 12], shape: shape, inputType: .multiArrayInt32)) { error in
+                XCTAssertEqual(error as? TextEncoder.TextEncodingError, .invalidTokenShape)
+            }
+        }
+    }
+
+    func testTokenArrayRejectsInvalidIDsWithoutNarrowingCastCrash() {
+        for type in [ModelFeatureType.multiArrayInt32, .multiArrayFloat32] {
+            for id in [-1, Int(Int32.max) + 1, Int.max] {
+                XCTAssertThrowsError(try TextEncoder.tokenArray(ids: [id], shape: [1, 1], inputType: type)) { error in
+                    XCTAssertEqual(error as? TextEncoder.TextEncodingError, .invalidTokens)
+                }
+            }
+        }
     }
 
     private func makeSpec(

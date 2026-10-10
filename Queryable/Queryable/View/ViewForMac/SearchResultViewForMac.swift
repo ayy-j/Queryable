@@ -55,6 +55,15 @@ struct SearchResultsViewForMac: View {
                 Spacer()
             }
             .padding(.top, -240)
+        case .SEARCH_ERROR:
+            VStack(spacing: 12) {
+                Label("Search failed", systemImage: "exclamationmark.triangle")
+                Text(photoSearcher.searchErrorMessage ?? "Try searching again.")
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                UpdateIndexView(goToIndexView: $goToIndexView, photoSearcher: photoSearcher)
+            }
+            .padding()
         case .HAS_RESULT:
             // Has result
             VStack {

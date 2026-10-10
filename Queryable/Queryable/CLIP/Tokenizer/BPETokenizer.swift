@@ -73,6 +73,27 @@ public struct BPETokenizer {
         return (tokens: tokens, tokenIDs: ids)
     }
 
+    /// Tokenize for a fixed model context, preserving start/end markers when truncating.
+    /// The existing minCount API remains unbounded for raw-token regression fixtures.
+    public func tokenize(input: String, contextLength: Int) throws -> (tokens: [String], tokenIDs: [Int]) {
+        guard contextLength >= 2 else { throw TokenizationError.invalidContextLength }
+        for special in [startToken, endToken] where vocabulary[special] == nil {
+            throw TokenizationError.missingSpecialToken(special)
+        }
+        var tokens = tokenize(input: input).tokens
+        if tokens.count > contextLength {
+            tokens = Array(tokens.prefix(contextLength - 1)) + [endToken]
+        } else if tokens.count < contextLength {
+            tokens.append(contentsOf: repeatElement(padToken, count: contextLength - tokens.count))
+        }
+        return (tokens, tokens.map { vocabulary[$0, default: unknownTokenID] })
+    }
+
+    public enum TokenizationError: Error, Equatable {
+        case invalidContextLength
+        case missingSpecialToken(String)
+    }
+
     /// Returns the token identifier for a token.
     public func tokenID(for token: String) -> Int? {
         vocabulary[token]

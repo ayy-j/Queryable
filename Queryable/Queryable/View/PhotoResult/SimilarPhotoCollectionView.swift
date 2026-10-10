@@ -39,6 +39,15 @@ struct SimilarPhotoCollectionView: View {
     
     var body: some View {
         ScrollView {
+            if let message = photoSearcher.similarPhotoErrorMessage {
+                VStack(spacing: 8) {
+                    Label("Similar-photo search failed", systemImage: "exclamationmark.triangle")
+                    Text(message)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+            }
             LazyVGrid(columns: threeColumnGrid, alignment: .center, spacing: SimilarPhotoCollectionView.itemSpacing) {
                 ForEach(photoSearcher.similarPhotoAssets) { asset in
                     GeometryReader { gr in

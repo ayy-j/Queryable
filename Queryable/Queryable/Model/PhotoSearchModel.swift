@@ -1,43 +1,92 @@
 //
 //  PhotoSearcherModel.swift
-//  TestEncoder
+//  Queryable
 //
-//  Created by Ke Fang on 2022/12/08.
-//
-import UIKit
 import CoreML
 import Foundation
-import Accelerate
 
 struct PhotoSearcherModel {
-    private var texEncoder: TextEncoder?
-    private(set) var spec: EmbeddingModelSpec = .appDefault
+    private var textEncoder: TextEncoder?
+    private let textEmbeddingProvider: ((String) throws -> MLShapedArray<Float32>)?
+    private(set) var spec: EmbeddingModelSpec
+
+    /// The optional provider exercises prediction failures without loading model files.
+    init(spec: EmbeddingModelSpec = .appDefault,
+         textEmbeddingProvider: ((String) throws -> MLShapedArray<Float32>)? = nil) {
+        self.spec = spec
+        self.textEmbeddingProvider = textEmbeddingProvider
+    }
 
     mutating func load_text_encoder(resourcesAt resourceURL: URL, spec: EmbeddingModelSpec) throws {
-        // TODO: move the pipeline creation to background task because it's heavy
-
         let encoder = try TextEncoder(resourcesAt: resourceURL, spec: spec)
-        texEncoder = encoder
+        textEncoder = encoder
         self.spec = spec
     }
-    
-    func text_embedding(prompt: String) -> MLShapedArray<Float32> {
-        let emb = try! texEncoder?.computeTextEmbedding(prompt: prompt)
-        return emb!
-    }
-    
-    func cosine_similarity(A: MLShapedArray<Float32>, B: MLShapedArray<Float32>) async -> Float {
-        let magnitude = vDSP.sumOfSquares(A.scalars).squareRoot() * vDSP.sumOfSquares(B.scalars).squareRoot()
-        let dotarray = vDSP.dot(A.scalars, B.scalars)
-        return  dotarray / magnitude
-    }
-    
-    func spherical_dist_loss(A: MLShapedArray<Float32>, B: MLShapedArray<Float32>) async -> Float {
-        let a = vDSP.divide(A.scalars, sqrt(vDSP.sumOfSquares(A.scalars)))
-        let b = vDSP.divide(B.scalars, sqrt(vDSP.sumOfSquares(B.scalars)))
 
-        let magnitude = sqrt(vDSP.sumOfSquares(vDSP.subtract(a, b)))
-        return pow(asin(magnitude / 2.0), 2) * 2.0
+    func text_embedding(prompt: String) throws -> MLShapedArray<Float32> {
+        let embedding: MLShapedArray<Float32>
+        if let provider = textEmbeddingProvider {
+            embedding = try provider(prompt)
+        } else {
+            guard let textEncoder else { throw PhotoSearchError.encoderNotReady }
+            embedding = try textEncoder.computeTextEmbedding(prompt: prompt)
+        }
+        do {
+            _ = try SimilarityVectorValidation.norm(of: embedding, dimension: spec.embeddingDimension)
+        } catch {
+            throw PhotoSearchError.invalidTextEmbedding
+        }
+        return embedding
     }
 
+    /// Validate the complete input set before publishing any CPU search results.
+    func similarityScores(query: MLShapedArray<Float32>, embeddings: [String: MLMultiArray]) throws -> [String: Float] {
+        let dimension = spec.embeddingDimension
+        let queryNorm = try SimilarityVectorValidation.norm(of: query, dimension: dimension)
+        let queryValues = query.scalars
+        var scores = [String: Float](minimumCapacity: embeddings.count)
+        for (id, embedding) in embeddings {
+            let norm = try SimilarityVectorValidation.norm(of: embedding, dimension: dimension, id: id)
+            // The shared validator has checked type, shape, strides, and finite values.
+            let values = embedding.dataPointer.assumingMemoryBound(to: Float32.self)
+            var score = 0.0
+            for index in 0..<dimension {
+                score += (Double(queryValues[index]) / queryNorm) * (Double(values[index]) / norm)
+            }
+            scores[id] = Float(min(1, max(-1, score)))
+        }
+        return scores
+    }
+
+    func cosine_similarity(A: MLShapedArray<Float32>, B: MLShapedArray<Float32>) throws -> Float {
+        let aNorm = try SimilarityVectorValidation.norm(of: A, dimension: spec.embeddingDimension)
+        let bNorm = try SimilarityVectorValidation.norm(of: B, dimension: spec.embeddingDimension)
+        let dot = zip(A.scalars, B.scalars).reduce(0.0) {
+            $0 + (Double($1.0) / aNorm) * (Double($1.1) / bNorm)
+        }
+        return Float(min(1, max(-1, dot)))
+    }
+
+    func spherical_dist_loss(A: MLShapedArray<Float32>, B: MLShapedArray<Float32>) throws -> Float {
+        let cosine = try cosine_similarity(A: A, B: B)
+        let angle = acos(Double(cosine))
+        return Float(angle * angle / 2)
+    }
+}
+
+enum PhotoSearchError: Error, LocalizedError {
+    case encoderNotReady
+    case invalidTextEmbedding
+    case referencePhotoMissing
+
+    var errorDescription: String? {
+        switch self {
+        case .encoderNotReady:
+            return "The search model is not ready. Reopen the app and try again."
+        case .invalidTextEmbedding:
+            return "The search model returned unusable data. Reopen the app and try again."
+        case .referencePhotoMissing:
+            return "This photo is not in the saved index. Update the index and try again."
+        }
+    }
 }

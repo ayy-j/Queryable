@@ -111,19 +111,7 @@ public struct TextEncoder {
     ///  - Returns: Embedding representing the input text
     private func encode(_ text: String) throws -> MLShapedArray<Float32> {
 
-        // Get models expected input length
-        let inputLength = inputShape.last!
-
-        // Tokenize, padding to the expected length
-        var (tokens, ids) = tokenizer.tokenize(input: text, minCount: inputLength)
-
-        // Truncate if necessary
-        if ids.count > inputLength {
-            tokens = tokens.dropLast(tokens.count - inputLength)
-            ids = ids.dropLast(ids.count - inputLength)
-            let truncated = tokenizer.decode(tokens: tokens)
-            print("Needed to truncate input '\(text)' to '\(truncated)'")
-        }
+        let (_, ids) = try tokenizer.tokenize(input: text, contextLength: spec.contextLength)
 
         // Use the model to generate the embedding
         return try encode(ids: ids)
@@ -133,6 +121,11 @@ public struct TextEncoder {
     let queue = DispatchQueue(label: "textencoder.predict")
 
     func encode(ids: [Int]) throws -> MLShapedArray<Float32> {
+        guard ids.count == spec.contextLength,
+              let vocabularySize = spec.vocabularySize,
+              ids.allSatisfy({ $0 >= 0 && $0 < vocabularySize }) else {
+            throw TextEncodingError.invalidTokens
+        }
         let inputName = inputDescription.name
         let inputShape = inputShape
 
@@ -151,6 +144,20 @@ public struct TextEncoder {
     }
 
     static func tokenArray(ids: [Int], shape: [Int], inputType: ModelFeatureType) throws -> MLMultiArray {
+        // Validate before MLShapedArray's shape precondition or a narrowing Int32 cast.
+        guard !shape.isEmpty, shape.allSatisfy({ $0 > 0 }) else {
+            throw TextEncodingError.invalidTokenShape
+        }
+        var count = 1
+        for size in shape {
+            let (product, overflow) = count.multipliedReportingOverflow(by: size)
+            guard !overflow else { throw TextEncodingError.invalidTokenShape }
+            count = product
+        }
+        guard count == ids.count else { throw TextEncodingError.invalidTokenShape }
+        guard ids.allSatisfy({ $0 >= 0 && Int32(exactly: $0) != nil }) else {
+            throw TextEncodingError.invalidTokens
+        }
         switch inputType {
         case .multiArrayInt32:
             return MLMultiArray(MLShapedArray<Int32>(scalars: ids.map { Int32($0) }, shape: shape))
@@ -161,7 +168,9 @@ public struct TextEncoder {
         }
     }
 
-    enum TextEncodingError: Error {
+    enum TextEncodingError: Error, Equatable {
+        case invalidTokens
+        case invalidTokenShape
         case modelContractMismatch
         case invalidOutput
         case unsupportedTokenizer

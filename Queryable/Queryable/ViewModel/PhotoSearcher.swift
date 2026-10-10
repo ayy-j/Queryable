@@ -18,6 +18,7 @@ import Accelerate
     case NEVER_INDEXED   = -1
     case NO_RESULT       = 0
     case HAS_RESULT      = 1
+    case SEARCH_ERROR    = 2
 }
 
 // build index code.
@@ -51,7 +52,7 @@ enum PhotoIndexingError: Error {
 class PhotoSearcher: ObservableObject {
     let defaults = UserDefaults.standard
     let photoCollection = PhotoCollection(smartAlbum: .smartAlbumUserLibrary)
-    var photoSearchModel = PhotoSearcherModel()
+    var photoSearchModel: PhotoSearcherModel
     private let modelSpec: EmbeddingModelSpec
     let KEY_HAS_ACCESS_TO_PHOTOS = "KEY_HAS_ACCESS_TO_PHOTOS"
 
@@ -60,6 +61,8 @@ class PhotoSearcher: ObservableObject {
     @Published var buildIndexCode: BUILD_INDEX_CODE = .DEFAULT
     /// Actionable message when model files are missing/unreadable; nil otherwise.
     @Published var modelErrorMessage: String? = nil
+    @Published var searchErrorMessage: String?
+    @Published var similarPhotoErrorMessage: String?
     @Published var totalUnIndexedPhotosNum: Int = -1
     @Published var curIndexingNums: Int = 0
     @Published var savedIndexingPhotosNum: Int = 0
@@ -101,6 +104,7 @@ class PhotoSearcher: ObservableObject {
     init(modelSpec: EmbeddingModelSpec = .appDefault,
          indexingOperations: PhotoIndexingOperations? = nil) {
         self.modelSpec = modelSpec
+        self.photoSearchModel = PhotoSearcherModel(spec: modelSpec)
         self.indexingOperations = indexingOperations
         let defaultTOPK_SIM = UserDefaults.standard.object(forKey: "TOPK_SIM") as? Int ?? 120
         self.TOPK_SIM = defaultTOPK_SIM
@@ -120,6 +124,7 @@ class PhotoSearcher: ObservableObject {
         print("Cache cleared.")
 
         self.searchResultCode = .DEFAULT
+        self.searchErrorMessage = nil
         self.modelErrorMessage = nil
         guard let path = Bundle.main.path(forResource: "CoreMLModels", ofType: nil, inDirectory: nil) else {
             logger.error("Failed to find the CoreML models.")
@@ -501,6 +506,7 @@ class PhotoSearcher: ObservableObject {
      */
     func search(with query: String) async {
         self.searchString = query
+        self.searchErrorMessage = nil
         self.searchResultPhotoAssets = [PhotoAsset]()
 
         self.searchResultCode = .IS_SEARCHING
@@ -534,98 +540,70 @@ class PhotoSearcher: ObservableObject {
             print("\(startingTime.timeIntervalSinceNow * -1) seconds used for cleanup.")
         }
 
-        print("Searching query = \(query)")
-        let _text_emb = self.photoSearchModel.text_embedding(prompt: query)
-
-        let startingTime = Date()
-        let FINAL_TOP_K = min(self.TOPK_SIM, self.savedEmbedding.count)
-
-        // GPU search path
-        if let gpu = self.gpuSearch, gpu.count > 0 {
-            let simDict: [String: Float]
-            do {
-                simDict = try gpu.search(queryEmbedding: _text_emb)
-            } catch {
-                logger.error("Search rejected an incompatible embedding: \(error.localizedDescription)")
-                self.searchResultCode = .NO_RESULT
-                return
-            }
-            let topK = simDict.sorted { $0.value > $1.value }.prefix(FINAL_TOP_K)
-            print("\(startingTime.timeIntervalSinceNow * -1) seconds used for GPU search \(self.savedEmbedding.count) embeddings.")
-
-            for photo in topK {
-                let _asset = PhotoAsset(identifier: photo.key)
-                self.searchResultPhotoAssets.append(_asset)
-            }
-        } else {
-            // CPU fallback
-            print("GPU search unavailable, using CPU fallback")
-            var simDict = [String: Float]()
-            for (key, cur_img_emb) in self.savedEmbedding {
-                let img_emb = MLShapedArray<Float32>(converting: cur_img_emb)
-                simDict[key] = await self.photoSearchModel.cosine_similarity(A: _text_emb, B: img_emb)
-            }
-            let topK = simDict.sorted { $0.value > $1.value }.prefix(FINAL_TOP_K)
-            for photo in topK {
-                let _asset = PhotoAsset(identifier: photo.key)
-                self.searchResultPhotoAssets.append(_asset)
-            }
-            print("\(startingTime.timeIntervalSinceNow * -1) seconds used for CPU search \(self.savedEmbedding.count) embeddings.")
+        do {
+            let embedding = try photoSearchModel.text_embedding(prompt: query)
+            let ids = try rankedPhotoIDs(query: embedding)
+            searchResultPhotoAssets = ids.map { PhotoAsset(identifier: $0) }
+            searchResultCode = ids.isEmpty ? .NO_RESULT : .HAS_RESULT
+        } catch {
+            searchErrorMessage = searchFailureMessage(for: error)
+            searchResultCode = .SEARCH_ERROR
+            logger.error("Search failed: \(error.localizedDescription)")
         }
-
-        self.searchResultCode = .HAS_RESULT
     }
 
-
-    /**
-     Similarity ranking — GPU-accelerated
-     */
     func similarPhoto(with photoAsset: PhotoAsset) async {
-        self.isFindingSimilarPhotos = true
-        self.similarPhotoAssets = [PhotoAsset]()
+        isFindingSimilarPhotos = true
+        similarPhotoAssets.removeAll()
+        similarPhotoErrorMessage = nil
+        defer { isFindingSimilarPhotos = false }
 
-        guard let embML = self.savedEmbedding[photoAsset.id] else {
-            self.isFindingSimilarPhotos = false
-            return
-        }
-
-        let _img_emb = MLShapedArray<Float32>(converting: embML)
-        let startingTime = Date()
-        let FINAL_TOP_K = min(self.TOPK_SIM, self.savedEmbedding.count)
-
-        if let gpu = self.gpuSearch, gpu.count > 0 {
-            let simDict: [String: Float]
-            do {
-                simDict = try gpu.search(queryEmbedding: _img_emb)
-            } catch {
-                logger.error("Similar-photo search rejected an incompatible embedding: \(error.localizedDescription)")
-                self.isFindingSimilarPhotos = false
-                return
+        do {
+            guard let embedding = savedEmbedding[photoAsset.id] else {
+                throw PhotoSearchError.referencePhotoMissing
             }
-            let topK = simDict.sorted { $0.value > $1.value }.prefix(FINAL_TOP_K)
-            print("\(startingTime.timeIntervalSinceNow * -1) seconds used for GPU similar search.")
+            // Validate before converting so alternate scalar/layout inputs cannot bypass the contract.
+            _ = try SimilarityVectorValidation.norm(of: embedding, dimension: modelSpec.embeddingDimension, id: photoAsset.id)
+            let query = MLShapedArray<Float32>(converting: embedding)
+            similarPhotoAssets = try rankedPhotoIDs(query: query).map { PhotoAsset(identifier: $0) }
+        } catch {
+            similarPhotoErrorMessage = searchFailureMessage(for: error)
+            logger.error("Similar-photo search failed: \(error.localizedDescription)")
+        }
+    }
 
-            for photo in topK {
-                let _asset = PhotoAsset(identifier: photo.key)
-                self.similarPhotoAssets.append(_asset)
+    /// Both search surfaces share validation, backend selection, and result publication rules.
+    private func rankedPhotoIDs(query: MLShapedArray<Float32>) throws -> [String] {
+        _ = try SimilarityVectorValidation.norm(of: query, dimension: modelSpec.embeddingDimension)
+        let scores: [String: Float]
+        if let gpu = gpuSearch, gpu.count > 0 {
+            do {
+                scores = try gpu.search(queryEmbedding: query)
+            } catch SimilaritySearchError.indexUnavailable {
+                gpuSearch = nil
+                logger.error("GPU index unavailable; using validated CPU search.")
+                scores = try photoSearchModel.similarityScores(query: query, embeddings: savedEmbedding)
+            } catch SimilaritySearchError.resultsUnavailable {
+                gpuSearch = nil
+                logger.error("GPU returned no scores; using validated CPU search.")
+                scores = try photoSearchModel.similarityScores(query: query, embeddings: savedEmbedding)
             }
         } else {
-            // CPU fallback
-            var simDict = [String: Float]()
-            for (key, cur_img_emb) in self.savedEmbedding {
-                let img_emb = MLShapedArray<Float32>(converting: cur_img_emb)
-                simDict[key] = await self.photoSearchModel.cosine_similarity(A: _img_emb, B: img_emb)
-            }
-            let topK = simDict.sorted { $0.value > $1.value }.prefix(FINAL_TOP_K)
-            for photo in topK {
-                let _asset = PhotoAsset(identifier: photo.key)
-                self.similarPhotoAssets.append(_asset)
-            }
-            print("\(startingTime.timeIntervalSinceNow * -1) seconds used for CPU similar search.")
+            scores = try photoSearchModel.similarityScores(query: query, embeddings: savedEmbedding)
         }
-
-        self.isFindingSimilarPhotos = false
+        return scores.sorted {
+            $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
+        }.prefix(max(0, TOPK_SIM)).map(\.key)
     }
+
+    private func searchFailureMessage(for error: Error) -> String {
+        if let error = error as? PhotoSearchError { return error.localizedDescription }
+        if error is SimilaritySearchError {
+            return "The search data could not be used. Update the index and try again."
+        }
+        return "The search model could not complete this search. Try again."
+    }
+
 
 }
 

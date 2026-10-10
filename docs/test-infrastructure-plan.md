@@ -2,7 +2,7 @@
 
 Status: simulator execution verified on October 9, 2026, with Xcode 27.0 and the iOS 27.0 simulator runtime.
 
-The full ordinary suite now executes. The latest run passed **61 tests with no failures or skips**, including the bundled S4 text prediction, photo-request callback/cancellation tests, indexing failure/retry tests, an isolated journal round trip, and the existing model/tokenizer/parity-metric checks. The separate opt-in performance test was deliberately excluded. Result bundle: `build/search-validation.xcresult`; log: `build/search-validation.log` (both ignored by Git).
+The full ordinary suite now executes. The latest run passed **73 tests with no failures or skips**, including the bundled S4 text prediction, photo-request callback/cancellation tests, indexing failure/retry tests, an isolated journal round trip, and the existing model/tokenizer/parity-metric checks. The separate opt-in performance test was deliberately excluded. Result bundle: `build/search-reliability-final.xcresult`; log: `build/search-reliability-final.log` (both ignored by Git).
 
 From the repository folder, choose a simulator returned by `xcrun simctl list devices available` and run:
 
@@ -27,6 +27,8 @@ The new failure tests use generated images, fake photo callbacks/encoders, and t
 Nine isolated `EmbeddingStoreTests` now cover explicit byte order, incorrect physical record counts, malformed/truncated headers and records, invalid IDs/nonfinite values, rejected writes preserving existing files, restart/replacement/deletion/compaction, large finite normalization, and readable blank entries. See [the storage format](qemb-v2-format.md).
 
 Seven `SimilarityValidationTests` cover input validation at all four required dimensions, including incompatible strides/types/shapes, nonfinite and zero/near-zero vectors, large finite normalization, and rejection through the empty GPU index API. See [search validation scope](search-vector-validation.md). These tests do not execute GPU ranking graphs.
+
+Twelve `PhotoSearchModelTests`/`SearchReliabilityTests` now cover analytic CPU cosine/ranking references at 512/768/1152/1536 dimensions (absolute tolerance `1e-6`), invalid CPU inputs, prediction failures and retry, stale-result/error cleanup, S2 fallback dimensions, and missing/successful similar-photo searches. They use generated vectors and injected saves; physical-device UI and GPU-failure recovery checks remain open.
 
 The suite still needs real Photos permission/iCloud walkthroughs, atomic interrupted storage recovery coverage, independent model parity fixtures, and CPU/GPU ranking comparisons. The installed simulator crashed inside Apple's GPU graph code in an earlier performance run; use a physical device for GPU validation. The physical iPhone benchmark is described in [the performance guide](performance-measurement.md).
 

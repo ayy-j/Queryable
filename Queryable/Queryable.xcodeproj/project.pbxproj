@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B70000010000000000000001 /* SearchReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000020000000000000001 /* SearchReliabilityTests.swift */; };
 		B60000010000000000000001 /* SimilarityValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000020000000000000001 /* SimilarityValidationTests.swift */; };
 		B50000010000000000000001 /* EmbeddingStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000020000000000000001 /* EmbeddingStoreTests.swift */; };
 		B40000010000000000000001 /* IndexingReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000020000000000000001 /* IndexingReliabilityTests.swift */; };
@@ -67,6 +68,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B70000020000000000000001 /* SearchReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchReliabilityTests.swift; sourceTree = "<group>"; };
 		B60000020000000000000001 /* SimilarityValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimilarityValidationTests.swift; sourceTree = "<group>"; };
 		B50000020000000000000001 /* EmbeddingStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddingStoreTests.swift; sourceTree = "<group>"; };
 		B40000020000000000000001 /* IndexingReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexingReliabilityTests.swift; sourceTree = "<group>"; };
@@ -330,6 +332,7 @@
 				B40000020000000000000001 /* IndexingReliabilityTests.swift */,
 				B50000020000000000000001 /* EmbeddingStoreTests.swift */,
 				B60000020000000000000001 /* SimilarityValidationTests.swift */,
+				B70000020000000000000001 /* SearchReliabilityTests.swift */,
 				B30000020000000000000001 /* PerformanceMeasurementTests.swift */,
 				DE4D62612AECD3CF007AB439 /* EmbeddingModelSpecTests.swift */,
 				PA0000062AECD3CF007AB439 /* ParityMetricsTests.swift */,
@@ -528,6 +531,7 @@
 				B40000010000000000000001 /* IndexingReliabilityTests.swift in Sources */,
 				B50000010000000000000001 /* EmbeddingStoreTests.swift in Sources */,
 				B60000010000000000000001 /* SimilarityValidationTests.swift in Sources */,
+				B70000010000000000000001 /* SearchReliabilityTests.swift in Sources */,
 				B30000010000000000000001 /* PerformanceMeasurementTests.swift in Sources */,
 				DE4D62602AECD3CF007AB439 /* EmbeddingModelSpecTests.swift in Sources */,
 				PA0000072AECD3CF007AB439 /* ParityMetricsTests.swift in Sources */,
