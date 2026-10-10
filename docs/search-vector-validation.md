@@ -13,7 +13,9 @@ supported shapes and exact dimension. Neither path truncates or pads.
 All values must be finite and the L2 norm must exceed `1e-8`. Blank/near-zero
 vectors are rejected rather than becoming arbitrary tied rankings. The norm and
 normalization division use Double arithmetic to avoid overflow for finite
-Float32 inputs; normalized vectors are then converted to Float16 for the GPU.
+Float32 inputs; normalized vectors are then stored as Float16 for the GPU.
+The graph casts operands to Float32 for dot-product accumulation and returns
+Float32 scores, avoiding the dense-vector drift observed with Float16 arithmetic.
 
 A valid query on an empty index returns an empty dictionary. An invalid query on
 an empty index still throws. Missing state for a nonempty index, missing graph
@@ -25,7 +27,10 @@ empty results. Build/add validation failures leave the existing index intact.
 count, incompatible scalar types, noncontiguous storage, nonfinite/blank values,
 and large finite values. The empty-index integration test exercises the actual
 GPU API without graph execution. The validation helper tests require no Metal
-device; the integration test explicitly skips if Metal is unavailable.
+device; the empty-index integration test explicitly skips if Metal is unavailable.
+An additional state test covers unique-ID upserts. Three native/device graph
+tests verify mutation scores and rankings against an independent CPU cosine
+reference at absolute tolerance `2e-3`; see [the mutation checks](gpu-index-mutations.md).
 
 ## CPU fallback and search errors
 
@@ -59,15 +64,23 @@ successful retry through the real CPU fallback, S2 dimension selection,
 empty-index behavior, and missing/successful similar-photo requests. Generated
 inputs and injected saves avoid changing the real saved index.
 
+## Fixed-context text input
+
+Long text queries now preserve the end token during fixed-context truncation.
+Boundary tests and a bundled S4 prompt-vs-explicit-token prediction check cover
+this path; see [the parity guide](parity-gates.md#fixed-context-text-input) for the
+source rule and coverage limits. Raw token fixtures remain unchanged.
+
 ## Remaining acceptance work
 
-GPU-vs-CPU ranking tolerance tests, add/remove/rebuild ranking coverage,
-model/index identity at activation, tokenizer truncation/end-marker checks, and
+Physical iOS GPU-vs-CPU ranking checks, model/index identity at activation,
+independent tokenizer parity checks, and
 physical-device UI/error walkthroughs remain open under #7/#10/#11. A GPU index
 containing a legacy blank vector fails build validation; storage preserves those
 records for the separate re-index repair path. Device graph execution remains
-required for ranking acceptance; these simulator tests do not establish GPU
-numerical parity or verify GPU backend-failure recovery.
+required for iOS ranking acceptance. Native Mac dense-vector mutation/ranking
+checks now pass; simulator tests do not execute these graphs. Backend-failure
+recovery and Float32 accumulation latency/peak-memory measurements remain open.
 
 Use the simulator command in [the test guide](test-infrastructure-plan.md),
 optionally adding `-only-testing:QueryableTests/SimilarityValidationTests`.

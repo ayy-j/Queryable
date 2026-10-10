@@ -88,11 +88,16 @@ class GPUSimilaritySearch {
         print("[GPUSearch] Built index: \(n) embeddings in \(String(format: "%.3f", Date().timeIntervalSince(startTime)))s")
     }
 
-    /// Add new embeddings to the existing index.
+    /// Upsert embeddings, preserving the row positions of existing IDs.
+    /// Validate and stage the whole batch before publishing any index changes.
     func addEmbeddings(_ newEmbeddings: [String: MLMultiArray]) throws {
         let norms = try validate(newEmbeddings)
         guard !newEmbeddings.isEmpty else { return }
-        let (newCount, countOverflow) = ids.count.addingReportingOverflow(newEmbeddings.count)
+        let existingRows = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element, $0.offset) })
+        let addedCount = newEmbeddings.keys.reduce(into: 0) { count, id in
+            if existingRows[id] == nil { count += 1 }
+        }
+        let (newCount, countOverflow) = ids.count.addingReportingOverflow(addedCount)
         guard !countOverflow else { throw SimilaritySearchError.bufferAllocationFailed }
         let newMatrixBuffer = try makeMatrixBuffer(embeddingCount: newCount)
         let destination = newMatrixBuffer.contents().assumingMemoryBound(to: Float16.self)
@@ -105,8 +110,13 @@ class GPUSimilaritySearch {
         var newIDs = ids
         newIDs.reserveCapacity(newCount)
         for (id, mlArray) in newEmbeddings {
-            let row = newIDs.count
-            newIDs.append(id)
+            let row: Int
+            if let existingRow = existingRows[id] {
+                row = existingRow
+            } else {
+                row = newIDs.count
+                newIDs.append(id)
+            }
             writeNormalizedEmbedding(
                 mlArray,
                 norm: norms[id]!,
@@ -223,9 +233,13 @@ class GPUSimilaritySearch {
 
         let matrixPlaceholder = graph.placeholder(shape: matrixShape, dataType: .float16, name: "embeddings")
         let queryPlaceholder = graph.placeholder(shape: queryShape, dataType: .float16, name: "query")
+        // Retain compact Float16 storage, but accumulate dense dot products in
+        // Float32. Float16 accumulation drifts measurably at larger dimensions.
+        let matrixFloat32 = graph.cast(matrixPlaceholder, to: .float32, name: "embeddingsFloat32")
+        let queryFloat32 = graph.cast(queryPlaceholder, to: .float32, name: "queryFloat32")
         let resultTensor = graph.matrixMultiplication(
-            primary: matrixPlaceholder,
-            secondary: queryPlaceholder,
+            primary: matrixFloat32,
+            secondary: queryFloat32,
             name: "similarity"
         )
 
@@ -286,18 +300,18 @@ class GPUSimilaritySearch {
             throw SimilaritySearchError.resultsUnavailable
         }
 
-        // Read results back as Float16
-        var resultFloat16 = [Float16](repeating: 0, count: n)
-        resultTensorData.mpsndarray().readBytes(&resultFloat16, strideBytes: nil)
+        // The graph accumulates and returns Float32 similarity scores.
+        var resultFloat32 = [Float32](repeating: 0, count: n)
+        resultTensorData.mpsndarray().readBytes(&resultFloat32, strideBytes: nil)
 
-        guard resultFloat16.allSatisfy(\.isFinite) else {
+        guard resultFloat32.allSatisfy(\.isFinite) else {
             throw SimilaritySearchError.nonFiniteVector
         }
 
         // Build result dictionary
         var simDict = [String: Float](minimumCapacity: n)
         for i in 0..<n {
-            simDict[ids[i]] = Float(resultFloat16[i])
+            simDict[ids[i]] = resultFloat32[i]
         }
 
         return simDict

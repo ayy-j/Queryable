@@ -295,6 +295,108 @@ final class EmbeddingModelSpecTests: XCTestCase {
         }
     }
 
+    func testImageOutputValidationAcceptsSupportedDimensionsAndVectorShapes() throws {
+        for dimension in [512, 768, 1_152] {
+            let spec = try makeSpec(embeddingDimension: dimension)
+            for shape in [[dimension], [1, dimension]] {
+                let provider = try imageOutputProvider(shape: shape, firstValue: 3)
+                let single = try ImgEncoder.validatedEmbedding(from: provider, spec: spec)
+                let batch = try ImgEncoder.validatedEmbeddings(
+                    from: MLArrayBatchProvider(array: [provider, provider]), expectedCount: 2, spec: spec
+                )
+
+                XCTAssertEqual(single.shape, shape)
+                XCTAssertEqual(single.scalars.first, 3, "Validation must preserve unnormalized output")
+                XCTAssertEqual(batch.count, 2)
+                XCTAssertEqual(batch[0].scalars, single.scalars)
+                XCTAssertEqual(batch[1].shape, shape)
+            }
+        }
+    }
+
+    func testImageOutputValidationRejectsWrongFeatureNamesTypesShapesAndDimensions() throws {
+        for dimension in [512, 768, 1_152] {
+            let spec = try makeSpec(embeddingDimension: dimension)
+            var invalid: [MLFeatureProvider] = [
+                try imageOutputProvider(shape: [dimension], name: "wrong_output"),
+                try MLDictionaryFeatureProvider(dictionary: ["embOutput": "not an array"]),
+                try MLDictionaryFeatureProvider(dictionary: [:])
+            ]
+            for type in [MLMultiArrayDataType.double, .int32, .float16] {
+                invalid.append(try imageOutputProvider(shape: [dimension], dataType: type))
+            }
+            for shape in [[dimension - 1], [dimension + 1], [dimension, 1], [1, 1, dimension], [2, dimension / 2]] {
+                invalid.append(try imageOutputProvider(shape: shape))
+            }
+            for provider in invalid {
+                XCTAssertThrowsError(try ImgEncoder.validatedEmbedding(from: provider, spec: spec))
+                XCTAssertThrowsError(try ImgEncoder.validatedEmbeddings(
+                    from: MLArrayBatchProvider(array: [provider]), expectedCount: 1, spec: spec
+                ))
+            }
+        }
+    }
+
+    func testImageOutputValidationRejectsNonfiniteBlankAndNearZeroVectors() throws {
+        let spec = try makeSpec()
+        for value in [Float.nan, .infinity, -.infinity, 0, 1e-9, 1e-8] {
+            let provider = try imageOutputProvider(shape: [512], firstValue: value)
+            XCTAssertThrowsError(try ImgEncoder.validatedEmbedding(from: provider, spec: spec))
+            XCTAssertThrowsError(try ImgEncoder.validatedEmbeddings(
+                from: MLArrayBatchProvider(array: [provider]), expectedCount: 1, spec: spec
+            ))
+        }
+        // A bad component after a valid component must still invalidate the vector.
+        let array = try MLMultiArray(shape: [512], dataType: .float32)
+        for index in 0..<array.count { array[index] = 0 }
+        array[0] = 1
+        array[511] = NSNumber(value: Float.nan)
+        let provider = try MLDictionaryFeatureProvider(dictionary: ["embOutput": array])
+        XCTAssertThrowsError(try ImgEncoder.validatedEmbedding(from: provider, spec: spec))
+    }
+
+    func testImageOutputValidationComputesNormWithoutFloat32Overflow() throws {
+        let spec = try makeSpec()
+        for value in [Float.greatestFiniteMagnitude, -Float.greatestFiniteMagnitude, 2e-8] {
+            let provider = try imageOutputProvider(shape: [512], firstValue: value)
+            let embedding = try ImgEncoder.validatedEmbedding(from: provider, spec: spec)
+            XCTAssertEqual(embedding.scalars.first, value)
+        }
+    }
+
+    func testImageBatchValidationRequiresExactCountAndNeverReturnsPartialBatch() throws {
+        let spec = try makeSpec()
+        let valid = try imageOutputProvider(shape: [512])
+        let invalid = try imageOutputProvider(shape: [512], firstValue: .nan)
+        for providers: [MLFeatureProvider] in [[], [valid], [valid, valid, valid]] {
+            XCTAssertThrowsError(try ImgEncoder.validatedEmbeddings(
+                from: MLArrayBatchProvider(array: providers), expectedCount: 2, spec: spec
+            ))
+        }
+        for providers: [MLFeatureProvider] in [[valid, invalid], [invalid, valid]] {
+            var returned: [MLShapedArray<Float32>]? = nil
+            XCTAssertThrowsError(returned = try ImgEncoder.validatedEmbeddings(
+                from: MLArrayBatchProvider(array: providers), expectedCount: 2, spec: spec
+            ))
+            XCTAssertNil(returned)
+        }
+        let empty = MLArrayBatchProvider(array: [])
+        XCTAssertTrue(try ImgEncoder.validatedEmbeddings(from: empty, expectedCount: 0, spec: spec).isEmpty)
+        XCTAssertThrowsError(try ImgEncoder.validatedEmbeddings(from: empty, expectedCount: -1, spec: spec))
+    }
+
+    private func imageOutputProvider(
+        shape: [Int],
+        name: String = "embOutput",
+        dataType: MLMultiArrayDataType = .float32,
+        firstValue: Float = 1
+    ) throws -> MLFeatureProvider {
+        let array = try MLMultiArray(shape: shape.map { NSNumber(value: $0) }, dataType: dataType)
+        for index in 0..<array.count { array[index] = 0 }
+        array[0] = NSNumber(value: firstValue)
+        return try MLDictionaryFeatureProvider(dictionary: [name: array])
+    }
+
     private func makeSpec(
         modelID: String = "test-model",
         revision: String = "v1",

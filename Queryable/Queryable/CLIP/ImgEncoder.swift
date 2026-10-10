@@ -138,14 +138,7 @@ public struct ImgEncoder {
             }
 
             let result = try queue.sync { try model.prediction(from: inputFeatures) }
-            guard let embeddingFeature = result.featureValue(for: spec.imageOutputName),
-                  let multiArray = embeddingFeature.multiArrayValue,
-                  multiArray.dataType == .float32,
-                  multiArray.count == spec.embeddingDimension else {
-                throw ImageEncodingError.predictionError
-            }
-
-            return MLShapedArray<Float32>(converting: multiArray)
+            return try Self.validatedEmbedding(from: result, spec: spec)
         } catch {
             print("Error in encoding: \(error)")
             throw error
@@ -157,14 +150,12 @@ public struct ImgEncoder {
     /// All CoreML intermediates are scoped inside autoreleasepool to release
     /// Neural Engine IOSurface allocations promptly between batches.
     public func encodeBatch(images: [UIImage]) throws -> [MLShapedArray<Float32>] {
+        guard !images.isEmpty else { return [] }
         let targetSize = CGSize(width: spec.imageSize, height: spec.imageSize)
-
-        var embeddings = [MLShapedArray<Float32>]()
-        embeddings.reserveCapacity(images.count)
 
         // autoreleasepool ensures CoreML's IOSurface-backed MLMultiArrays
         // and Espresso intermediates are released before the next batch
-        try autoreleasepool {
+        return try autoreleasepool {
             var featureProviders = [MLFeatureProvider]()
             featureProviders.reserveCapacity(images.count)
 
@@ -185,19 +176,56 @@ public struct ImgEncoder {
             // Single batch prediction call — Neural Engine handles pipelining
             let batchResults = try queue.sync { try model.predictions(fromBatch: batchProvider) }
 
-            for i in 0..<batchResults.count {
-                let result = batchResults.features(at: i)
-                guard let embeddingFeature = result.featureValue(for: spec.imageOutputName),
-                      let multiArray = embeddingFeature.multiArrayValue,
-                      multiArray.dataType == .float32,
-                      multiArray.count == spec.embeddingDimension else {
-                    throw ImageEncodingError.predictionError
-                }
-                embeddings.append(MLShapedArray<Float32>(converting: multiArray))
-            }
+            return try Self.validatedEmbeddings(from: batchResults, expectedCount: images.count, spec: spec)
+        }
+    }
+
+    /// Validate the runtime output, including providers whose metadata passed model validation.
+    /// Preserve the model's shape and values; normalization remains the caller's responsibility.
+    static func validatedEmbedding(
+        from result: MLFeatureProvider,
+        spec: EmbeddingModelSpec
+    ) throws -> MLShapedArray<Float32> {
+        guard spec.imageOutputType == .multiArrayFloat32,
+              result.featureNames.contains(spec.imageOutputName),
+              let feature = result.featureValue(for: spec.imageOutputName),
+              feature.type == .multiArray,
+              let multiArray = feature.multiArrayValue,
+              multiArray.dataType == .float32,
+              multiArray.count == spec.embeddingDimension else {
+            throw ImageEncodingError.predictionError
+        }
+        let shape = multiArray.shape.map { $0.intValue }
+        guard shape == [spec.embeddingDimension] || shape == [1, spec.embeddingDimension] else {
+            throw ImageEncodingError.predictionError
         }
 
-        return embeddings
+        let embedding = MLShapedArray<Float32>(converting: multiArray)
+        var squaredNorm: Double = 0
+        for value in embedding.scalars {
+            guard value.isFinite else { throw ImageEncodingError.predictionError }
+            let scalar = Double(value)
+            squaredNorm += scalar * scalar
+        }
+        // Match the search layer's minimum L2 norm without Float32 overflow/underflow.
+        guard squaredNorm.isFinite, squaredNorm.squareRoot() > 1e-8 else {
+            throw ImageEncodingError.predictionError
+        }
+        return embedding
+    }
+
+    /// Return the complete validated batch or throw; no partially validated batch escapes.
+    static func validatedEmbeddings(
+        from results: MLBatchProvider,
+        expectedCount: Int,
+        spec: EmbeddingModelSpec
+    ) throws -> [MLShapedArray<Float32>] {
+        guard expectedCount >= 0, results.count == expectedCount else {
+            throw ImageEncodingError.predictionError
+        }
+        return try (0..<expectedCount).map {
+            try validatedEmbedding(from: results.features(at: $0), spec: spec)
+        }
     }
 
     /// GPU-accelerated image resize using CoreImage CILanczosScaleTransform,

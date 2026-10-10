@@ -146,8 +146,8 @@ final class ParityMetricsTests: XCTestCase {
         let file = try ParityFixtureLoader.loadTokenFixtures(from: fixtureURL)
         for fixture in file.cases where fixture.paddedLength != nil {
             if fixture.id == "max-length-truncation" {
-                // Over-length input: the tokenizer emits more than the
-                // context length and TextEncoder truncates to 77.
+                // Raw regression fixtures remain unbounded. TextEncoder uses
+                // the separate fixed-context API, preserving EOS at slot 76.
                 XCTAssertGreaterThan(fixture.expectedTokenIDs.count, fixture.paddedLength!)
             } else {
                 XCTAssertEqual(fixture.expectedTokenIDs.count, fixture.paddedLength)

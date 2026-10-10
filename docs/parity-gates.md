@@ -50,6 +50,31 @@ swiftc -o /tmp/gen_tokens /tmp/genpkg/BPETokenizer.swift \
 /tmp/gen_tokens
 ```
 
+## Fixed-context text input
+
+The `minCount` tokenizer API and v1 token fixtures describe raw tokens with a
+minimum padding length; they intentionally remain unbounded. The long fixture
+is not a record of the final 77-token model input.
+
+`TextEncoder` now uses `BPETokenizer.tokenize(input:contextLength:)` with the active
+spec's context length. Overlong sequences retain the start marker, the first
+`contextLength - 2` body tokens, and the end marker in the final position. Short
+sequences retain their end marker before padding. This follows the truncation
+rule in [upstream OpenCLIP's tokenizer](https://github.com/mlfoundations/open_clip/blob/main/src/open_clip/tokenizer.py)
+(reviewed October 9, 2026). Missing start/end vocabulary entries or a context
+shorter than two tokens throw. Padding keeps the existing ID-0 fallback.
+
+Boundary tests use an explicit small vocabulary and analytically constructed
+sequences at contexts 2, 4, and 77. The bundled S4 prediction test also checks a
+200-word repeated-`a` prompt against the explicit sequence `[49406] + [320] * 75
++ [49407]`, then compares prompt-based prediction with direct prediction of
+those IDs (absolute tolerance `1e-6`). Token-array tests reject mismatched,
+nonpositive, or overflowing shapes and invalid integer IDs before array
+construction; direct prediction checks the spec's token count and vocabulary
+range. These are truncation/regression checks, not independent full-tokenizer or
+PyTorch/Core ML vector parity evidence. The upstream Unicode/byte-BPE checks and
+independently produced fixtures remain required under #5/#7.
+
 ## Vector fixtures
 
 Reference image/text vectors come from pinned PyTorch code, checkpoint

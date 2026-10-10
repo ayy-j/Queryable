@@ -113,4 +113,181 @@ final class SimilarityValidationTests: XCTestCase {
         XCTAssertEqual(gpu.count, 0)
         XCTAssertTrue(gpu.ids.isEmpty)
     }
+
+    // MPSGraph execution crashes in Apple's simulator runtime on some hosts.
+    // Keep state/validation coverage there and execute score checks on a native Mac or device.
+    private func requireGPUExecution() throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("MPSGraph execution requires a physical device or native macOS test runner")
+        #endif
+    }
+
+    private func makeGPU(_ dimension: Int) throws -> GPUSimilaritySearch {
+        guard let gpu = GPUSimilaritySearch(embeddingDimension: dimension) else {
+            throw XCTSkip("Metal unavailable")
+        }
+        return gpu
+    }
+
+    /// Dense vectors with a known component along the all-ones query and an
+    /// orthogonal alternating component; every required dimension is even.
+    private func knownVector(_ dimension: Int, along: Float32, across: Float32) -> MLShapedArray<Float32> {
+        MLShapedArray(scalars: (0..<dimension).map { along + ($0.isMultiple(of: 2) ? across : -across) },
+                      shape: [1, dimension])
+    }
+
+    private func cpuCosine(_ lhs: [Float32], _ rhs: [Float32]) -> Double {
+        let dot = zip(lhs, rhs).reduce(0.0) { $0 + Double($1.0) * Double($1.1) }
+        let lhsNorm = sqrt(lhs.reduce(0.0) { $0 + Double($1) * Double($1) })
+        let rhsNorm = sqrt(rhs.reduce(0.0) { $0 + Double($1) * Double($1) })
+        return dot / (lhsNorm * rhsNorm)
+    }
+
+    private func assertScores(_ gpu: GPUSimilaritySearch,
+                              expected: [String: MLShapedArray<Float32>],
+                              query: MLShapedArray<Float32>,
+                              file: StaticString = #filePath, line: UInt = #line) throws {
+        // Declared before execution: allow 0.002 absolute error for Float16
+        // inputs and Float32 matmul. Scores are separated by much more than this.
+        let absoluteTolerance = 2e-3
+        let scores = try gpu.search(queryEmbedding: query)
+        let reference = expected.mapValues { cpuCosine($0.scalars, query.scalars) }
+        XCTAssertEqual(Set(scores.keys), Set(expected.keys), file: file, line: line)
+        for (id, expectedScore) in reference {
+            XCTAssertEqual(Double(try XCTUnwrap(scores[id], file: file, line: line)), expectedScore,
+                           accuracy: absoluteTolerance, "ID: \(id)", file: file, line: line)
+        }
+        XCTAssertEqual(scores.keys.sorted { scores[$0]! > scores[$1]! },
+                       reference.keys.sorted { reference[$0]! > reference[$1]! }, file: file, line: line)
+    }
+
+    func testUpsertsKeepUniqueIDsAndExistingRowPositionsWithoutExecutingGraph() throws {
+        for dimension in dimensions {
+            let gpu = try makeGPU(dimension)
+            try gpu.buildIndex(from: ["replace": MLMultiArray(vector(dimension)),
+                                      "untouched": MLMultiArray(vector(dimension))])
+            let originalIDs = gpu.ids
+            try gpu.addEmbeddings(["replace": MLMultiArray(vector(dimension, value: -1))])
+            XCTAssertEqual(gpu.ids, originalIDs)
+            XCTAssertEqual(gpu.count, 2)
+            try gpu.addEmbeddings(["replace": MLMultiArray(vector(dimension)),
+                                   "added": MLMultiArray(vector(dimension))])
+            XCTAssertEqual(Array(gpu.ids.prefix(2)), originalIDs)
+            XCTAssertEqual(gpu.ids.last, "added")
+            for _ in 0..<3 {
+                try gpu.addEmbeddings(["replace": MLMultiArray(vector(dimension))])
+            }
+            XCTAssertEqual(gpu.count, 3)
+            XCTAssertEqual(Set(gpu.ids).count, 3)
+            let beforeInvalid = gpu.ids
+            assertError(.zeroNormVector) {
+                try gpu.addEmbeddings(["replace": MLMultiArray(vector(dimension, value: -1)),
+                                       "invalid": MLMultiArray(vector(dimension, value: 0))])
+            }
+            XCTAssertEqual(gpu.ids, beforeInvalid)
+            gpu.removeEmbeddings(["replace", "missing"])
+            XCTAssertEqual(Set(gpu.ids), ["untouched", "added"])
+            try gpu.buildIndex(from: [:])
+            XCTAssertEqual(gpu.count, 0)
+            XCTAssertTrue(try gpu.search(queryEmbedding: vector(dimension)).isEmpty)
+        }
+    }
+
+    func testGPUUpsertsMatchIndependentCPUCosineAtEveryRequiredDimension() throws {
+        try requireGPUExecution()
+        for dimension in dimensions {
+            let gpu = try makeGPU(dimension)
+            let query = vector(dimension)
+            var expected = ["replace": knownVector(dimension, along: -0.8, across: 0.6),
+                            "untouched": knownVector(dimension, along: 0.6, across: 0.8)]
+            try gpu.buildIndex(from: expected.mapValues { MLMultiArray($0) })
+            try assertScores(gpu, expected: expected, query: query)
+            let originalIDs = gpu.ids
+
+            expected["replace"] = knownVector(dimension, along: 0.9, across: 0.3)
+            try gpu.addEmbeddings(["replace": MLMultiArray(expected["replace"]!)])
+            XCTAssertEqual(gpu.ids, originalIDs)
+            XCTAssertEqual(gpu.count, 2)
+            try assertScores(gpu, expected: expected, query: query)
+
+            expected["replace"] = knownVector(dimension, along: -0.3, across: 0.9)
+            expected["added"] = knownVector(dimension, along: 0.8, across: 0.6)
+            try gpu.addEmbeddings(["replace": MLMultiArray(expected["replace"]!),
+                                   "added": MLMultiArray(expected["added"]!)])
+            XCTAssertEqual(Array(gpu.ids.prefix(2)), originalIDs)
+            XCTAssertEqual(gpu.count, 3)
+            try assertScores(gpu, expected: expected, query: query)
+
+            for along: Float32 in [-0.9, 0.2, 0.95] {
+                expected["replace"] = knownVector(dimension, along: along, across: 0.4)
+                try gpu.addEmbeddings(["replace": MLMultiArray(expected["replace"]!)])
+                XCTAssertEqual(gpu.count, 3)
+                XCTAssertEqual(Set(gpu.ids).count, 3)
+                try assertScores(gpu, expected: expected, query: query)
+            }
+        }
+    }
+
+    func testGPUInvalidBatchesPreservePreviousUsableIndex() throws {
+        try requireGPUExecution()
+        for dimension in dimensions {
+            let gpu = try makeGPU(dimension)
+            let query = vector(dimension)
+            let expected = ["existing": knownVector(dimension, along: 0.6, across: 0.8)]
+            try gpu.buildIndex(from: expected.mapValues { MLMultiArray($0) })
+            let originalIDs = gpu.ids
+            let invalidVectors: [(MLShapedArray<Float32>, SimilaritySearchError)] = [
+                (vector(dimension, value: 0), .zeroNormVector),
+                (vector(dimension, value: .nan), .nonFiniteVector),
+                (vector(dimension - 1), .invalidEmbedding(id: "invalid", expected: dimension, actual: dimension - 1)),
+                (vector(dimension, shape: [2, dimension / 2]), .unsupportedLayout)
+            ]
+            for (invalid, error) in invalidVectors {
+                assertError(error) {
+                    try gpu.addEmbeddings(["existing": MLMultiArray(vector(dimension, value: -1)),
+                                           "new": MLMultiArray(vector(dimension)),
+                                           "invalid": MLMultiArray(invalid)])
+                }
+                XCTAssertEqual(gpu.ids, originalIDs)
+                XCTAssertEqual(gpu.count, 1)
+                try assertScores(gpu, expected: expected, query: query)
+                assertError(error) { try gpu.buildIndex(from: ["invalid": MLMultiArray(invalid)]) }
+                try assertScores(gpu, expected: expected, query: query)
+            }
+            try gpu.addEmbeddings([:])
+            try assertScores(gpu, expected: expected, query: query)
+        }
+    }
+
+    func testGPURemovalRebuildAndEmptyTransitionsMatchCPU() throws {
+        try requireGPUExecution()
+        for dimension in dimensions {
+            let gpu = try makeGPU(dimension)
+            let query = vector(dimension)
+            var expected = ["a": knownVector(dimension, along: 0.8, across: 0.6),
+                            "b": knownVector(dimension, along: -0.6, across: 0.8),
+                            "c": knownVector(dimension, along: 0.3, across: 0.9)]
+            try gpu.addEmbeddings(expected.mapValues { MLMultiArray($0) })
+            try assertScores(gpu, expected: expected, query: query)
+            let retainedOrder = gpu.ids.filter { $0 != "b" }
+            gpu.removeEmbeddings(["b", "missing"])
+            expected.removeValue(forKey: "b")
+            XCTAssertEqual(gpu.ids, retainedOrder)
+            try assertScores(gpu, expected: expected, query: query)
+            gpu.removeEmbeddings(["missing"])
+            try assertScores(gpu, expected: expected, query: query)
+            gpu.removeEmbeddings(Set(expected.keys))
+            XCTAssertEqual(gpu.count, 0)
+            XCTAssertTrue(try gpu.search(queryEmbedding: query).isEmpty)
+            expected = ["rebuilt": knownVector(dimension, along: -0.8, across: 0.6)]
+            try gpu.buildIndex(from: expected.mapValues { MLMultiArray($0) })
+            try assertScores(gpu, expected: expected, query: query)
+            try gpu.buildIndex(from: [:])
+            XCTAssertTrue(gpu.ids.isEmpty)
+            XCTAssertTrue(try gpu.search(queryEmbedding: query).isEmpty)
+            try gpu.addEmbeddings(expected.mapValues { MLMultiArray($0) })
+            try assertScores(gpu, expected: expected, query: query)
+        }
+    }
+
 }
