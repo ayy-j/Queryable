@@ -19,6 +19,45 @@ struct ConfigView: View {
     var body: some View {
         NavigationView {
             Form {
+                Section(header: Text("Search Model and Index")) {
+                    LabeledContent("Active model", value: photoSearcher.activeModelName)
+                    if let requested = photoSearcher.requestedModelName {
+                        LabeledContent("Requested model", value: requested)
+                        Text("The active index remains available while the replacement is built.")
+                            .foregroundColor(.secondary)
+                    }
+                    if let message = photoSearcher.recoveryMessage {
+                        Text(message).foregroundColor(.secondary)
+                    }
+                    if let message = photoSearcher.modelErrorMessage {
+                        Text(message).foregroundColor(.secondary)
+                    }
+                    Button("Build with MobileCLIP2 S4") {
+                        Task { await photoSearcher.requestModel(.mobileCLIP2S4) }
+                    }
+                    Button("Build with MobileCLIP S2") {
+                        Task { await photoSearcher.requestModel(.mobileCLIPS2) }
+                    }
+                    Text("Model files must be installed and compatible. A replacement becomes active only after indexing completes.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    if photoSearcher.isIndexing {
+                        Button("Pause indexing") { photoSearcher.pauseIndexing() }
+                        Button("Cancel indexing") { photoSearcher.cancelIndexing() }
+                    } else {
+                        Button("Resume / retry indexing") {
+                            Task { await photoSearcher.resumeIndexing() }
+                        }
+                        Button("Restart with a fresh index") {
+                            Task { await photoSearcher.restartIndexing() }
+                        }
+                    }
+                    if photoSearcher.canRollback {
+                        Button("Keep previous model and index") {
+                            Task { await photoSearcher.rollbackModel() }
+                        }
+                    }
+                }
                 Section(header: Text("User Guide and Feedback")) {
                     Label("About Queryable", systemImage: "book")
                         .accessibilityAddTraits(.isButton)

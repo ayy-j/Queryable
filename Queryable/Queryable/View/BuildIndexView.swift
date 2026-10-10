@@ -33,17 +33,13 @@ struct BuildIndexView: View {
         case .IS_BUILDING_INDEX:
             BuildingIndexView(photoSearcher: photoSearcher)
                 .onAppear {
-                    Task {
-                        UIApplication.shared.isIdleTimerDisabled = true
-                        await photoSearcher.buildIndex()
-                        UIApplication.shared.isIdleTimerDisabled = false
-                    }
+                    photoSearcher.startIndexing()
                 }
         case .MODEL_ERROR:
             ModelErrorView(photoSearcher: photoSearcher)
         case .BUILD_FINISHED:
             BuildFinishView(photoSearcher: photoSearcher)
-        case .BUILD_INCOMPLETE, .BUILD_ERROR:
+        case .BUILD_INCOMPLETE, .BUILD_ERROR, .BUILD_PAUSED, .BUILD_CANCELLED:
             IndexingRecoveryView(photoSearcher: photoSearcher)
         }
     }
@@ -111,21 +107,25 @@ struct BuildingIndexView: View {
                 Image(uiImage: photoSearcher.curShowingPhoto)
                     .resizable()
                     .scaledToFit()
-                    .frame(height: geometry.size.height * 0.8)
+                    .frame(height: geometry.size.height * 0.65)
 
                 VStack(spacing: 4) {
                     Text("\(photoSearcher.curIndexingNums)/\(photoSearcher.totalUnIndexedPhotosNum) photos checked")
                     Text("\(photoSearcher.savedIndexingPhotosNum) saved · \(photoSearcher.buildingEmbedding.count) waiting to save · \(photoSearcher.failedIndexingPhotosNum) need retry")
                         .font(.caption)
 
-                    Text(NSLocalizedString("Task runs entirely locally. Do not operate until completed.", comment: ""))
+                    Text("Indexing runs locally. Saved photos are preserved when you pause.")
                         .padding([.leading, .trailing])
                         .foregroundColor(.gray)
                         .font(.caption)
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
+                    HStack {
+                        Button("Pause") { photoSearcher.pauseIndexing() }
+                        Button("Cancel") { photoSearcher.cancelIndexing() }
+                    }
                 }
-                .frame(height: geometry.size.height * 0.2)
+                .frame(height: geometry.size.height * 0.35)
             }
         }
     }
@@ -135,16 +135,29 @@ struct IndexingRecoveryView: View {
     @Environment(\.presentationMode) var presentationMode
     @ObservedObject var photoSearcher: PhotoSearcher
 
+    private var title: String {
+        switch photoSearcher.buildIndexCode {
+        case .BUILD_PAUSED: return "Indexing paused"
+        case .BUILD_CANCELLED: return "Indexing cancelled"
+        case .BUILD_ERROR: return "Indexing stopped"
+        default: return "Some photos need another try"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 16) {
-            Label(photoSearcher.buildIndexCode == .BUILD_ERROR ? "Indexing stopped" : "Some photos need another try",
-                  systemImage: "exclamationmark.triangle")
+            Label(title, systemImage: "exclamationmark.triangle")
                 .font(.title2)
             Text("\(photoSearcher.savedIndexingPhotosNum) photos saved. \(photoSearcher.remainingIndexingPhotosNum) still need indexing.")
-            Text(photoSearcher.indexingErrorMessage ?? "Some photos could not be loaded or processed. If they are stored only in iCloud, download them in Photos, then retry.")
+            Text(photoSearcher.indexingErrorMessage ?? photoSearcher.recoveryMessage ?? "Saved progress is preserved. If photos are stored only in iCloud, download them in Photos, then retry.")
                 .foregroundColor(.secondary)
-            Button("Retry remaining photos") {
-                photoSearcher.buildIndexCode = .LOADING_MODEL
+            Button("Resume / retry remaining photos") {
+                Task { await photoSearcher.resumeIndexing() }
+            }
+            if photoSearcher.canRollback {
+                Button("Keep previous model") {
+                    Task { await photoSearcher.rollbackModel() }
+                }
             }
             if !photoSearcher.savedEmbedding.isEmpty {
                 Button("Search saved photos") {
@@ -171,6 +184,14 @@ struct ModelErrorView: View {
                 .foregroundColor(.gray)
                 .multilineTextAlignment(.center)
                 .padding([.leading, .trailing])
+            Button("Retry") {
+                Task { await photoSearcher.resumeIndexing() }
+            }
+            if photoSearcher.canRollback {
+                Button("Keep previous model") {
+                    Task { await photoSearcher.rollbackModel() }
+                }
+            }
         }
         .padding()
     }

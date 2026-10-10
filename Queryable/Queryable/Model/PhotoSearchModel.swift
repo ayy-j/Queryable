@@ -23,6 +23,8 @@ struct PhotoSearcherModel {
         self.spec = spec
     }
 
+    mutating func releaseTextEncoder() { textEncoder = nil }
+
     func text_embedding(prompt: String) throws -> MLShapedArray<Float32> {
         let embedding: MLShapedArray<Float32>
         if let provider = textEmbeddingProvider {
@@ -78,6 +80,7 @@ enum PhotoSearchError: Error, LocalizedError {
     case encoderNotReady
     case invalidTextEmbedding
     case referencePhotoMissing
+    case photoAccessUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -85,6 +88,8 @@ enum PhotoSearchError: Error, LocalizedError {
             return "The search model is not ready. Reopen the app and try again."
         case .invalidTextEmbedding:
             return "The search model returned unusable data. Reopen the app and try again."
+        case .photoAccessUnavailable:
+            return "Photo access is unavailable. Restore access in Settings and retry."
         case .referencePhotoMissing:
             return "This photo is not in the saved index. Update the index and try again."
         }

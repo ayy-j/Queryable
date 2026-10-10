@@ -8,8 +8,9 @@
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var goToIndexView = false
-    @ObservedObject var photoSearcher = PhotoSearcher()
+    @StateObject var photoSearcher = PhotoSearcher()
     
     var body: some View {
         NavigationStack {
@@ -79,6 +80,11 @@ struct ContentView: View {
         }
         .accentColor(.weakgreen)
         .navigationViewStyle(StackNavigationViewStyle())
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background {
+                photoSearcher.pauseForBackground()
+            }
+        }
     }
 }
 

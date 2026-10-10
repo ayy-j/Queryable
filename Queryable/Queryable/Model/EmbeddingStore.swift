@@ -2,36 +2,203 @@
 //  EmbeddingStore.swift
 //  Queryable
 //
-//  Efficient binary embedding storage with incremental saves.
-//  Replaces NSKeyedArchiver full-file rewrites with append-only journal + tombstones.
-//
-//  File format (v2):
-//    Header: "QEMB" + version UInt32 + record count UInt64 + metadata length + JSON metadata
-//    Record: idLength UInt16 + id UTF-8 bytes + embedding Float32[model dimension]
-//    All integers and Float32 bit patterns use little-endian byte order.
-//    Count includes physical main + journal records, including replaced/deleted IDs.
-//
-//  Journal file: same record format, no header (append-only for new embeddings)
-//  Tombstone file: newline-separated IDs of deleted embeddings
+//  Crash-safe immutable record segments with an atomic manifest/checkpoint commit.
+//  See docs/qemb-v2-format.md for the wire format, migration, and recovery protocol.
 //
 
 import Foundation
 import CoreML
+import CryptoKit
+import Darwin
 
-enum EmbeddingStoreError: Error {
+enum EmbeddingStoreError: Error, LocalizedError {
+    case incompatible
+    case corrupt
+    case staleGeneration
+    case invalidRecords
     /// The store has not been created for the active model spec yet.
     case notReady
-    /// The append-only journal could not accept the new embeddings.
+    /// A transaction could not be persisted.
     case writeFailed
     /// The header metadata does not fit the on-disk length field.
     case metadataTooLarge(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .incompatible: return "The saved index belongs to a different model contract. It has been preserved."
+        case .corrupt: return "The saved index could not be verified. It has been preserved; restart indexing to build a replacement."
+        case .staleGeneration: return "This operation belongs to an earlier indexing generation."
+        case .invalidRecords: return "The index contains an invalid identifier or embedding vector."
+        case .notReady: return "The index is not ready."
+        case .writeFailed: return "The index could not be saved. Reload its committed checkpoint before retrying."
+        case .metadataTooLarge: return "The model metadata is too large to save."
+        }
+    }
 }
 
-/// @unchecked Sendable: all stored properties are immutable after init (let).
-/// loadAll() is a pure reader that returns a fresh dictionary with no shared mutable state,
-/// so it is safe to call from a detached Task. Write methods (appendNew, markDeleted, etc.)
-/// are only called from the @MainActor-isolated PhotoSearcher, so no concurrent writes occur.
+/// Every transaction and load is serialized across store instances. Snapshot arrays are
+/// fresh values owned by the caller. Production callers do not install fault hooks.
+struct EmbeddingStoreSnapshot {
+    let embeddings: [String: MLMultiArray]
+    let generation: UUID
+    let revision: UInt64
+    let checkpoint: Data?
+}
+
 class EmbeddingStore: @unchecked Sendable {
+    enum Boundary: CaseIterable {
+        case segmentWritten, segmentSynced, segmentDirectorySynced
+        case manifestWritten, manifestSynced, manifestRenamed, directorySynced, cleanupFinished
+    }
+    /// Test-only deterministic interruption hook; throw to simulate a stopped writer.
+    var faultInjector: ((Boundary) throws -> Void)?
+    private static let transactionLock = NSRecursiveLock()
+    private let selectedGeneration: UUID?
+    private struct Segment: Codable {
+        let name: String
+        let digest: String
+        let count: UInt64
+        let deleting: [String]
+    }
+    private struct Manifest: Codable {
+        let version: Int
+        let compatibilityIdentity: String
+        let metadata: HeaderMetadata
+        let generation: UUID
+        let revision: UInt64
+        let segments: [Segment]
+        let checkpoint: Data?
+    }
+    private struct Envelope: Codable { let payload: Data; let digest: String }
+    private var metadata: HeaderMetadata {
+        HeaderMetadata(modelID: spec.modelID, checkpointHash: checkpointHash,
+                       dimension: spec.embeddingDimension, scalarType: spec.storageScalarType.rawValue,
+                       preprocessingFingerprint: spec.preprocessingFingerprint, normalized: spec.normalizeEmbeddings)
+    }
+    private func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+    private var transactionDirectory: URL {
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let identity = digest((try! encoder.encode(metadata)) + Data(spec.compatibilityIdentity.utf8))
+        return baseDir.appendingPathComponent("qemb-transactions/\(identity)/\(selectedGeneration?.uuidString ?? "default")", isDirectory: true)
+    }
+    private var manifestURL: URL { transactionDirectory.appendingPathComponent("manifest.json") }
+
+    private func readManifest() throws -> Manifest? {
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else { return nil }
+        do {
+            let envelope = try JSONDecoder().decode(Envelope.self, from: Data(contentsOf: manifestURL))
+            guard digest(envelope.payload) == envelope.digest else { throw EmbeddingStoreError.corrupt }
+            let manifest = try JSONDecoder().decode(Manifest.self, from: envelope.payload)
+            guard manifest.version == 1, manifest.metadata == metadata, manifest.compatibilityIdentity == spec.compatibilityIdentity else { throw EmbeddingStoreError.incompatible }
+            if let selectedGeneration, manifest.generation != selectedGeneration { throw EmbeddingStoreError.staleGeneration }
+            return manifest
+        } catch let error as EmbeddingStoreError { throw error }
+        catch { throw EmbeddingStoreError.corrupt }
+    }
+
+    func load() throws -> EmbeddingStoreSnapshot? {
+        Self.transactionLock.lock(); defer { Self.transactionLock.unlock() }
+        guard let manifest = try readManifest() else {
+            guard selectedGeneration == nil else { return nil }
+            let main = baseDir.appendingPathComponent(mainFileName)
+            let sidecarsExist = [journalFileName, tombstoneFileName].contains {
+                FileManager.default.fileExists(atPath: baseDir.appendingPathComponent($0).path)
+            }
+            guard FileManager.default.fileExists(atPath: main.path) || sidecarsExist else { return nil }
+            guard FileManager.default.fileExists(atPath: main.path) else { throw EmbeddingStoreError.corrupt }
+            let handle = try FileHandle(forReadingFrom: main); defer { try? handle.close() }
+            _ = try readHeader(from: handle)
+            guard let embeddings = loadFromBinaryFormat() else { throw EmbeddingStoreError.corrupt }
+            // Stable adoption identity across repeated recovery before the first transaction.
+            let hash = SHA256.hash(data: Data((spec.modelID + checkpointHash).utf8))
+            let bytes = Array(hash.prefix(16))
+            let generation = UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
+            return EmbeddingStoreSnapshot(embeddings: embeddings, generation: generation, revision: 0, checkpoint: nil)
+        }
+        var embeddings: [String: MLMultiArray] = [:]
+        for segment in manifest.segments {
+            guard segment.name == URL(fileURLWithPath: segment.name).lastPathComponent else { throw EmbeddingStoreError.corrupt }
+            let url = transactionDirectory.appendingPathComponent(segment.name)
+            guard let bytes = try? Data(contentsOf: url, options: .mappedIfSafe), digest(bytes) == segment.digest else { throw EmbeddingStoreError.corrupt }
+            let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
+            let header = try readHeader(from: handle)
+            guard header.recordCount == segment.count else { throw EmbeddingStoreError.corrupt }
+            var remaining = segment.count
+            for id in segment.deleting { embeddings.removeValue(forKey: id) }
+            guard readRecordsFromBinary(handle, startingAt: header.recordsOffset, remainingRecords: &remaining, into: &embeddings), remaining == 0 else { throw EmbeddingStoreError.corrupt }
+        }
+        return EmbeddingStoreSnapshot(embeddings: embeddings, generation: manifest.generation,
+                                      revision: manifest.revision, checkpoint: manifest.checkpoint)
+    }
+
+    /// Atomically commit vector mutations and their durable indexing checkpoint.
+    @discardableResult
+    func commit(upserts: [String: MLMultiArray] = [:], deleting: Set<String> = [],
+                checkpoint: Data? = nil, generation: UUID, replacing: Bool = false) throws -> UInt64 {
+        Self.transactionLock.lock(); defer { Self.transactionLock.unlock() }
+        guard isValid(upserts), deleting.allSatisfy({ !$0.isEmpty && !$0.contains(where: \.isNewline) && $0.utf8.count <= Int(UInt16.max) }) else { throw EmbeddingStoreError.invalidRecords }
+        if let selectedGeneration, selectedGeneration != generation { throw EmbeddingStoreError.staleGeneration }
+        let previous = try load()
+        if let previous, previous.generation != generation { throw EmbeddingStoreError.staleGeneration }
+        let oldManifest = try readManifest()
+        var records = upserts
+        var segments = replacing ? [] : (oldManifest?.segments ?? [])
+        if !replacing, oldManifest == nil, let previous {
+            records = previous.embeddings
+            for id in deleting { records.removeValue(forKey: id) }
+            records.merge(upserts) { _, new in new }
+        }
+        guard FileManager.default.fileExists(atPath: baseDir.path) else { throw EmbeddingStoreError.writeFailed }
+        try FileManager.default.createDirectory(at: transactionDirectory, withIntermediateDirectories: true)
+        for directory in [baseDir, baseDir.appendingPathComponent("qemb-transactions"), transactionDirectory.deletingLastPathComponent()] {
+            try syncDirectory(directory)
+        }
+        let name = UUID().uuidString + ".qemb"
+        let url = transactionDirectory.appendingPathComponent(name)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.write(contentsOf: makeHeader(recordCount: UInt64(records.count)))
+        for id in records.keys.sorted() { try handle.write(contentsOf: recordData(id: id, mlArray: records[id]!)) }
+        try faultInjector?(.segmentWritten)
+        try handle.synchronize(); try faultInjector?(.segmentSynced)
+        try syncDirectory(); try faultInjector?(.segmentDirectorySynced)
+        let checksum = digest(try Data(contentsOf: url, options: .mappedIfSafe))
+        segments.append(Segment(name: name, digest: checksum, count: UInt64(records.count), deleting: deleting.sorted()))
+        guard (previous?.revision ?? 0) < UInt64.max else { throw EmbeddingStoreError.writeFailed }
+        let revision = (previous?.revision ?? 0) + 1
+        let manifest = Manifest(version: 1, compatibilityIdentity: spec.compatibilityIdentity, metadata: metadata, generation: generation, revision: revision,
+                                segments: segments, checkpoint: checkpoint)
+        let payload = try JSONEncoder().encode(manifest)
+        let bytes = try JSONEncoder().encode(Envelope(payload: payload, digest: digest(payload)))
+        let temporary = transactionDirectory.appendingPathComponent(UUID().uuidString + ".tmp")
+        FileManager.default.createFile(atPath: temporary.path, contents: nil)
+        let manifestHandle = try FileHandle(forWritingTo: temporary)
+        defer { try? manifestHandle.close() }
+        try manifestHandle.write(contentsOf: bytes); try faultInjector?(.manifestWritten)
+        try manifestHandle.synchronize(); try faultInjector?(.manifestSynced)
+        guard rename(temporary.path, manifestURL.path) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        try faultInjector?(.manifestRenamed)
+        try syncDirectory(); try faultInjector?(.directorySynced)
+        // Readers and writers share the lock; no live reader can retain an old
+        // manifest while its segments are removed. Cleanup is never a commit step.
+        let referenced = Set(segments.map(\.name))
+        if let files = try? FileManager.default.contentsOfDirectory(at: transactionDirectory, includingPropertiesForKeys: nil) {
+            for file in files where (file.pathExtension == "qemb" || file.pathExtension == "tmp") && !referenced.contains(file.lastPathComponent) {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+        try faultInjector?(.cleanupFinished)
+        return revision
+    }
+
+    private func syncDirectory(_ directory: URL? = nil) throws {
+        let fd = open((directory ?? transactionDirectory).path, O_RDONLY)
+        guard fd >= 0 else { throw EmbeddingStoreError.writeFailed }
+        defer { close(fd) }
+        guard fsync(fd) == 0 else { throw EmbeddingStoreError.writeFailed }
+    }
+
     private struct HeaderMetadata: Codable, Equatable {
         let modelID: String
         let checkpointHash: String
@@ -52,7 +219,8 @@ class EmbeddingStore: @unchecked Sendable {
     private let tombstoneFileName: String
     private let baseDir: URL
 
-    init(spec: EmbeddingModelSpec, checkpointHash: String, directory: URL? = nil) {
+    init(spec: EmbeddingModelSpec, checkpointHash: String, directory: URL? = nil, generation: UUID? = nil) {
+        self.selectedGeneration = generation
         self.spec = spec
         self.checkpointHash = checkpointHash
         self.recordEmbeddingSize = spec.embeddingDimension * MemoryLayout<Float32>.size
@@ -68,18 +236,11 @@ class EmbeddingStore: @unchecked Sendable {
     /// Load embeddings only when their model and checkpoint metadata match this store.
     /// Returns nil if no data exists.
     func loadAll() -> [String: MLMultiArray]? {
-        let mainPath = baseDir.appendingPathComponent(mainFileName)
-        let journalPath = baseDir.appendingPathComponent(journalFileName)
-
-        if FileManager.default.fileExists(atPath: mainPath.path) ||
-           FileManager.default.fileExists(atPath: journalPath.path) {
-            return loadFromBinaryFormat()
-        }
-
-        return nil
+        guard let snapshot = try? load() else { return nil }
+        return snapshot.embeddings.isEmpty ? nil : snapshot.embeddings
     }
 
-    /// Load from the new binary format (main file + journal - tombstones).
+    /// Validate the pre-transaction v2 format for non-destructive migration.
     private func loadFromBinaryFormat() -> [String: MLMultiArray]? {
         let startTime = Date()
         var embeddings = [String: MLMultiArray]()
@@ -107,149 +268,50 @@ class EmbeddingStore: @unchecked Sendable {
         guard remainingRecords == 0 else { return nil }
 
         // Apply tombstones (deletions)
-        let tombstones = loadTombstones()
+        guard let tombstones = try? loadTombstones() else { return nil }
         for id in tombstones {
             embeddings.removeValue(forKey: id)
         }
 
         print("[EmbeddingStore] Loaded \(embeddings.count) embeddings in \(String(format: "%.3f", Date().timeIntervalSince(startTime)))s")
-        return embeddings.isEmpty ? nil : embeddings
+        return embeddings
     }
 
     // MARK: - Save
 
-    /// Full save: write all embeddings to the main file, clear journal and tombstones.
     @discardableResult
     func saveAll(_ embeddings: [String: MLMultiArray]) -> Bool {
-        guard isValid(embeddings) else { return false }
-        let startTime = Date()
-        let mainPath = baseDir.appendingPathComponent(mainFileName)
-
-        guard let header = try? makeHeader(recordCount: UInt64(embeddings.count)) else { return false }
-        let temporaryPath = baseDir.appendingPathComponent("\(mainFileName).\(UUID().uuidString).tmp")
-        guard FileManager.default.createFile(atPath: temporaryPath.path, contents: nil),
-              let handle = try? FileHandle(forWritingTo: temporaryPath) else { return false }
         do {
-            try handle.write(contentsOf: header)
-            for (id, mlArray) in embeddings {
-                try handle.write(contentsOf: recordData(id: id, mlArray: mlArray))
-            }
-            try handle.synchronize()
-            try handle.close()
-
-            if FileManager.default.fileExists(atPath: mainPath.path) {
-                _ = try FileManager.default.replaceItemAt(mainPath, withItemAt: temporaryPath)
-            } else {
-                try FileManager.default.moveItem(at: temporaryPath, to: mainPath)
-            }
-
-            // Clear journal and tombstones after full save
-            clearJournal()
-            clearTombstones()
-            print("[EmbeddingStore] Saved \(embeddings.count) embeddings in \(String(format: "%.3f", Date().timeIntervalSince(startTime)))s")
+            let old = try load()
+            try commit(upserts: embeddings, checkpoint: old?.checkpoint,
+                       generation: old?.generation ?? selectedGeneration ?? UUID(), replacing: true)
             return true
-        } catch {
-            try? handle.close()
-            try? FileManager.default.removeItem(at: temporaryPath)
-            print("[EmbeddingStore] Failed to save: \(error)")
-            return false
-        }
+        } catch { return false }
     }
 
-    /// Incremental save: append new embeddings to the journal file.
-    /// Also removes these IDs from tombstones so re-indexed photos survive restart.
     @discardableResult
-    func appendNew(_ newEmbeddings: [String: MLMultiArray]) -> Bool {
-        guard !newEmbeddings.isEmpty else { return true }
-        guard isValid(newEmbeddings) else { return false }
-
-        // Scrub re-indexed IDs from tombstones to prevent stale deletions on restart
-        removeTombstones(for: Set(newEmbeddings.keys))
-
-        let mainPath = baseDir.appendingPathComponent(mainFileName)
-        if !FileManager.default.fileExists(atPath: mainPath.path) {
-            guard let header = try? makeHeader(recordCount: 0) else { return false }
-            do {
-                try header.write(to: mainPath, options: .atomic)
-            } catch {
-                print("[EmbeddingStore] Failed to initialize index header: \(error)")
-                return false
-            }
-        }
-
-        let journalPath = baseDir.appendingPathComponent(journalFileName)
-
-        var data = Data()
-        for (id, mlArray) in newEmbeddings {
-            data.append(recordData(id: id, mlArray: mlArray))
-        }
-
+    func appendNew(_ embeddings: [String: MLMultiArray]) -> Bool {
         do {
-            if FileManager.default.fileExists(atPath: journalPath.path) {
-                let handle = try FileHandle(forWritingTo: journalPath)
-                defer { try? handle.close() }
-                let originalLength = try handle.seekToEnd()
-                do {
-                    try handle.write(contentsOf: data)
-                    try handle.synchronize()
-                } catch {
-                    // Do not leave a partial record behind a previously valid journal.
-                    try? handle.truncate(atOffset: originalLength)
-                    throw error
-                }
-            } else {
-                try data.write(to: journalPath, options: .atomic)
-            }
-            guard incrementHeaderRecordCount(by: UInt64(newEmbeddings.count)) else { return false }
-            print("[EmbeddingStore] Appended \(newEmbeddings.count) embeddings to journal")
+            let old = try load()
+            try commit(upserts: embeddings, checkpoint: old?.checkpoint,
+                       generation: old?.generation ?? selectedGeneration ?? UUID())
             return true
-        } catch {
-            print("[EmbeddingStore] Failed to append: \(error)")
-            return false
-        }
+        } catch { return false }
     }
 
-    /// Mark embeddings as deleted by adding to tombstone file.
     @discardableResult
-    func markDeleted(_ deletedIds: [String]) -> Bool {
-        guard !deletedIds.isEmpty else { return true }
-
-        let tombstonePath = baseDir.appendingPathComponent(tombstoneFileName)
-        let content = deletedIds.joined(separator: "\n") + "\n"
-
+    func markDeleted(_ ids: [String]) -> Bool {
         do {
-            guard let contentData = content.data(using: .utf8) else { return false }
-            if FileManager.default.fileExists(atPath: tombstonePath.path) {
-                let handle = try FileHandle(forWritingTo: tombstonePath)
-                defer { handle.closeFile() }
-                handle.seekToEndOfFile()
-                handle.write(contentData)
-            } else {
-                try content.write(to: tombstonePath, atomically: true, encoding: .utf8)
-            }
+            let old = try load()
+            try commit(deleting: Set(ids), checkpoint: old?.checkpoint,
+                       generation: old?.generation ?? selectedGeneration ?? UUID())
             return true
-        } catch {
-            print("[EmbeddingStore] Failed to write tombstones: \(error)")
-            return false
-        }
+        } catch { return false }
     }
 
-    /// Compact: rewrite the main file from in-memory dict, clearing journal and tombstones.
     @discardableResult
-    func compact(_ embeddings: [String: MLMultiArray]) -> Bool {
-        return saveAll(embeddings)
-    }
-
-    /// Check if journal + tombstones warrant compaction.
-    func needsCompaction() -> Bool {
-        let journalPath = baseDir.appendingPathComponent(journalFileName)
-        let tombstonePath = baseDir.appendingPathComponent(tombstoneFileName)
-
-        let journalSize = (try? FileManager.default.attributesOfItem(atPath: journalPath.path)[.size] as? Int) ?? 0
-        let hasTombstones = FileManager.default.fileExists(atPath: tombstonePath.path)
-
-        return journalSize > 5_000_000 || hasTombstones
-    }
+    func compact(_ embeddings: [String: MLMultiArray]) -> Bool { saveAll(embeddings) }
+    func needsCompaction() -> Bool { ((try? readManifest())?.segments.count ?? 0) > 32 }
 
     // MARK: - Binary Format Helpers
 
@@ -263,7 +325,7 @@ class EmbeddingStore: @unchecked Sendable {
             normalized: spec.normalizeEmbeddings
         )
         let metadataData = try JSONEncoder().encode(metadata)
-        guard metadataData.count <= Int(UInt32.max) else { throw EmbeddingStoreError.metadataTooLarge(metadataData.count) }
+        guard metadataData.count <= 65_536 else { throw EmbeddingStoreError.metadataTooLarge(metadataData.count) }
 
         var data = Data(headerMagic)
         var version = formatVersion.littleEndian
@@ -298,24 +360,6 @@ class EmbeddingStore: @unchecked Sendable {
                 normalized: spec.normalizeEmbeddings
               ) else { return nil }
         return (recordsOffset, recordCount)
-    }
-
-    private func incrementHeaderRecordCount(by increment: UInt64) -> Bool {
-        let mainPath = baseDir.appendingPathComponent(mainFileName)
-        guard let handle = try? FileHandle(forUpdating: mainPath) else { return false }
-        defer { try? handle.close() }
-        guard let header = try? readHeader(from: handle),
-              header.recordCount <= UInt64.max - increment else { return false }
-        var count = (header.recordCount + increment).littleEndian
-        do {
-            try handle.seek(toOffset: 8)
-            try handle.write(contentsOf: Data(bytes: &count, count: MemoryLayout<UInt64>.size))
-            try handle.synchronize()
-            return true
-        } catch {
-            print("[EmbeddingStore] Failed to update record count: \(error)")
-            return false
-        }
     }
 
     private func isValid(_ embeddings: [String: MLMultiArray]) -> Bool {
@@ -392,18 +436,18 @@ class EmbeddingStore: @unchecked Sendable {
         guard fixedHeader.count == 20,
               let metadataLength = readUInt32(fixedHeader, at: 16),
               metadataLength <= 65_536 else {
-            throw CocoaError(.fileReadCorruptFile)
+            throw EmbeddingStoreError.corrupt
         }
         let metadata = try readExactly(Int(metadataLength), from: handle)
         guard metadata.count == Int(metadataLength) else {
-            throw CocoaError(.fileReadCorruptFile)
+            throw EmbeddingStoreError.corrupt
         }
 
         var headerData = fixedHeader
         headerData.append(metadata)
-        guard let header = readAndValidateHeader(headerData) else {
-            throw CocoaError(.fileReadCorruptFile)
-        }
+        guard let decoded = try? JSONDecoder().decode(HeaderMetadata.self, from: metadata) else { throw EmbeddingStoreError.corrupt }
+        guard decoded == self.metadata else { throw EmbeddingStoreError.incompatible }
+        guard let header = readAndValidateHeader(headerData) else { throw EmbeddingStoreError.corrupt }
         return header
     }
 
@@ -433,38 +477,13 @@ class EmbeddingStore: @unchecked Sendable {
         return data.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self)) }
     }
 
-    private func loadTombstones() -> Set<String> {
-        let tombstonePath = baseDir.appendingPathComponent(tombstoneFileName)
-        guard let content = try? String(contentsOf: tombstonePath, encoding: .utf8) else {
-            return []
-        }
-        return Set(content.components(separatedBy: .newlines).filter { !$0.isEmpty })
-    }
-
-    private func clearJournal() {
-        let journalPath = baseDir.appendingPathComponent(journalFileName)
-        try? FileManager.default.removeItem(at: journalPath)
-    }
-
-    private func clearTombstones() {
-        let tombstonePath = baseDir.appendingPathComponent(tombstoneFileName)
-        try? FileManager.default.removeItem(at: tombstonePath)
-    }
-
-    /// Remove specific IDs from the tombstone file (e.g. when re-indexing a previously deleted photo).
-    private func removeTombstones(for idsToRemove: Set<String>) {
-        guard !idsToRemove.isEmpty else { return }
-        let tombstonePath = baseDir.appendingPathComponent(tombstoneFileName)
-        guard let content = try? String(contentsOf: tombstonePath, encoding: .utf8) else { return }
-
-        let remaining = content.components(separatedBy: .newlines)
-            .filter { !$0.isEmpty && !idsToRemove.contains($0) }
-
-        if remaining.isEmpty {
-            try? FileManager.default.removeItem(at: tombstonePath)
-        } else {
-            let updated = remaining.joined(separator: "\n") + "\n"
-            try? updated.write(to: tombstonePath, atomically: true, encoding: .utf8)
-        }
+    private func loadTombstones() throws -> Set<String> {
+        let path = baseDir.appendingPathComponent(tombstoneFileName)
+        guard FileManager.default.fileExists(atPath: path.path) else { return [] }
+        let content = try String(contentsOf: path, encoding: .utf8)
+        guard content.isEmpty || content.hasSuffix("\n") else { throw EmbeddingStoreError.corrupt }
+        let ids = content.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        guard ids.allSatisfy({ !$0.contains(where: \.isNewline) && $0.utf8.count <= Int(UInt16.max) }) else { throw EmbeddingStoreError.corrupt }
+        return Set(ids)
     }
 }

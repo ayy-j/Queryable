@@ -1,67 +1,103 @@
-# QEMB v2 storage validation
+# QEMB storage and recovery
 
-The current implementation stores Float32 vectors. Float16 persistence remains
-open in issue #8. These rules describe the existing v2 format and strict loader;
-they do not provide a transaction/recovery protocol.
+## Record encoding
 
-## Bytes and identity
-
-All integer fields and IEEE 754 Float32 bit patterns are little-endian, matching
-existing files produced on supported Apple devices. The header is:
+New immutable segments retain the QEMB v2 Float32 encoding. All integers and
+IEEE 754 Float32 bit patterns are little-endian:
 
 | Offset | Field |
 | --- | --- |
 | 0 | Four bytes `QEMB` |
 | 4 | UInt32 version, exactly 2 |
-| 8 | UInt64 physical record count across main file and journal |
-| 16 | UInt32 UTF-8 JSON metadata byte length, at most 65,536 |
-| 20 | Metadata, followed by the main records |
+| 8 | UInt64 physical record count in this segment |
+| 16 | UInt32 UTF-8 JSON metadata length, at most 65,536 |
+| 20 | Metadata followed by records |
 
-Metadata must match the requested model ID, checkpoint hash, dimension, scalar
-type, preprocessing fingerprint, and normalization flag. Unsupported versions,
-unknown scalar types, and incompatible metadata fail loading.
+Metadata binds model ID, checkpoint hash, dimension, scalar type,
+preprocessing fingerprint, and normalization. The transaction manifest also
+binds the complete model compatibility identity (including tokenizer and paired
+tower contracts); its directory is derived from both identities. Float16 remains
+unsupported and issue #8 stays open for that acceptance criterion.
 
-Each record consists of a UInt16 ID byte length, that many UTF-8 ID bytes, and
-exactly `dimension` Float32 values. IDs must be nonempty and contain no newline
-characters, since deletions use a newline-separated tombstone file. Values must
-be finite. Zero vectors remain readable for compatibility with the app's
-existing blank-entry repair path. Writes reject invalid IDs, types, dimensions,
-and nonfinite values before changing any files. Normalization accumulates the
-squared norm in Double to avoid overflow for large finite Float32 values.
+A record contains a UInt16 UTF-8 identifier length, identifier bytes, and exactly
+`dimension` Float32 values. IDs must be nonempty, at most 65,535 bytes, and contain
+no newline characters. Values must be finite. Zero vectors remain readable for
+legacy blank-entry repair. Inputs are validated before any write. Normalization
+accumulates the squared norm in Double. Counts include physical records in each
+segment, including replacements; replay produces one live value per identifier.
 
-## Count and load behavior
+## Transaction protocol
 
-The count includes replaced and deleted records until compaction. For example,
-two main records followed by a replacement and an addition in the journal have a
-count of four, regardless of tombstones. Journal entries replace earlier values
-with the same ID; tombstones are applied afterward. A successful full save or
-compaction resets the count to the number of records in the new main file.
+New writes use immutable QEMB v2 record segments and one checksummed JSON
+manifest. A manifest binds full compatibility metadata, generation UUID,
+revision, ordered segment references (SHA-256, physical count, deletions), and
+opaque checkpoint bytes. Upserts and deletions in one segment form one operation:
+deletions apply first, then upserts. Checkpoint progress is authoritative only
+when committed in the same manifest as its corresponding vectors/deletions.
 
-The loader reads complete records and requires their total to equal the header
-count. Truncated headers/records, invalid UTF-8, nonfinite vectors, unexpected
-extra records, and missing whole records reject the entire load. A valid prefix
-is never returned. Rejection returns `nil` through the existing API and does not
-modify or delete any source files; that API currently also uses `nil` for absent
-or empty indexes.
+A writer validates inputs, writes and synchronizes a new segment, synchronizes
+its directory, writes and synchronizes a temporary manifest, atomically renames
+it over the manifest, then synchronizes the directory. The rename is the single
+visibility/commit boundary. Interruptions before it retain the old commit;
+after it recovery sees the entire new commit. Count fields never change in
+place. Unreferenced files are ignored. Compaction replaces segment references
+in that same transaction, so old tombstones cannot replay over the compacted
+snapshot. After directory synchronization, unreferenced segments and temporary files are
+best-effort deleted under the same reader/writer lock. Interruption during cleanup
+can only retain extra files; it cannot remove referenced data. Legacy files and
+other generation directories are never included in this cleanup.
 
-## Remaining recovery work
+Recovery verifies manifest checksum/version/identity, every referenced segment
+checksum/header/count, then replays complete segments. Missing storage and valid
+empty storage are distinct; incompatible metadata and corruption are errors.
+No valid prefix or silent empty result is returned by the typed API. A failed
+write before manifest rename can be retried. A failure after rename has an
+uncertain acknowledgement: reload before continuing; the durable checkpoint
+and revision settle whether it committed. Repeated recovery is read-only.
 
-Journal writes and header-count updates are separate operations. Termination
-between them can leave a count mismatch, which now fails closed. Main-file
-replacement and journal/tombstone cleanup are also separate operations; stale
-sidecars after interrupted compaction can fail validation or replay deletions.
-Generation-bound sidecars, atomic commit/recovery, distinguishable load errors,
-and fault-injection/forced-termination tests remain required by issues #8/#13.
-Do not treat these validation tests as evidence of crash-safe recovery.
+Build generations have separate directories under a full-identity digest.
+Operations specify their generation; a mismatch is rejected. A validated old
+v2 main/journal/tombstone set is imported by the first successful transaction,
+without modifying legacy files. Invalid/interrupted legacy sets cannot prove a
+committed boundary and remain preserved with an explicit corrupt result.
+Legacy v1/archive data still requires an explicit recoverable rebuild.
 
-Legacy v1 and archived indexes lack verified model provenance. This loader leaves
-them untouched and requires re-indexing rather than inventing an identity.
+## API and maintenance
 
-## Verification
+`load()` returns `nil` only for missing storage. A snapshot with an empty embedding
+dictionary is a valid committed empty store. It returns generation, revision,
+and checkpoint bytes along with vectors. `incompatible`, `corrupt`, and
+`staleGeneration` are explicit failures; ordinary I/O errors also propagate.
+`commit` requires a generation and returns the committed revision. Existing
+Boolean write wrappers and optional `loadAll` remain only for compatibility;
+production recovery uses the typed API. All store loads and commits serialize
+through a process-wide lock. The app has one process writing the store.
 
-`EmbeddingStoreTests` uses generated vectors and isolated temporary directories;
-it never touches the user's saved index. It covers byte order, restart,
-replacement, deletion, compaction, counts, malformed/truncated data, invalid
-writes, large finite normalization, and readable legacy blank values. Run it
-using the simulator command in [the test guide](test-infrastructure-plan.md),
-optionally adding `-only-testing:QueryableTests/EmbeddingStoreTests`.
+Old v2 main-file counts cover main plus legacy journal records. Their strict
+loader requires exact counts and valid complete records and tombstones. A missing
+or damaged journal cannot be safely inferred and is reported corrupt, with all
+source files preserved. There is no automatic destructive salvage. A migrated
+manifest takes precedence over old sidecars permanently. New generation stores
+do not fall back to another generation or to legacy storage.
+
+Compaction writes a new immutable full snapshot and swaps only its manifest
+references; checkpoint and generation are preserved. After a successful commit, unreachable files in that generation are reclaimed
+under the process-wide lock. Failed cleanup may leave harmless extra files until
+the next successful commit. Retained legacy sources and separate build generations
+are not reclaimed automatically.
+Immutable segment checksums are SHA-256; manifests contain a checksummed payload.
+This detects accidental damage, not malicious filesystem modification.
+
+## Verification and limits
+
+`EmbeddingStoreTests` uses generated vectors in temporary directories. It injects
+failure after segment write/sync/directory sync, manifest write/sync/rename, and
+final directory sync, and orphan cleanup. It exercises append plus checkpoint/deletion, tombstone
+replacement, and compaction at every boundary and repeatedly reopens each state.
+Other cases cover generations, stale writers, invalid writes, corrupt/truncated
+segments, migration without source deletion, counts, byte order, and large finite
+normalization. The process continues during these deterministic tests; actual
+forced process termination and device filesystem/power-loss testing remain
+separate manual checks. Directory fsync and FileHandle synchronization establish
+the intended durability ordering; simulated exceptions are not physical power
+failure evidence.

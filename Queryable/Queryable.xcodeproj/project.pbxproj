@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BB9000010000000000000002 /* RecoveryIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB9000020000000000000002 /* RecoveryIntegrationTests.swift */; };
+		BB9000010000000000000001 /* ModelIndexCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB9000020000000000000001 /* ModelIndexCoordinatorTests.swift */; };
+		BB9000010000000000000000 /* ModelIndexCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB9000020000000000000000 /* ModelIndexCoordinator.swift */; };
 		B70000010000000000000001 /* SearchReliabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000020000000000000001 /* SearchReliabilityTests.swift */; };
 		B60000010000000000000001 /* SimilarityValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B60000020000000000000001 /* SimilarityValidationTests.swift */; };
 		B50000010000000000000001 /* EmbeddingStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50000020000000000000001 /* EmbeddingStoreTests.swift */; };
@@ -68,6 +71,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		BB9000020000000000000002 /* RecoveryIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryIntegrationTests.swift; sourceTree = "<group>"; };
+		BB9000020000000000000001 /* ModelIndexCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelIndexCoordinatorTests.swift; sourceTree = "<group>"; };
+		BB9000020000000000000000 /* ModelIndexCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelIndexCoordinator.swift; sourceTree = "<group>"; };
 		B70000020000000000000001 /* SearchReliabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchReliabilityTests.swift; sourceTree = "<group>"; };
 		B60000020000000000000001 /* SimilarityValidationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimilarityValidationTests.swift; sourceTree = "<group>"; };
 		B50000020000000000000001 /* EmbeddingStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddingStoreTests.swift; sourceTree = "<group>"; };
@@ -215,6 +221,7 @@
 				94E917952A5A475B00324937 /* PhotoSearchModel.swift */,
 				C1A000012C8F000000000001 /* GPUSimilaritySearch.swift */,
 				C1A000032C8F000000000001 /* EmbeddingStore.swift */,
+				BB9000020000000000000000 /* ModelIndexCoordinator.swift */,
 			);
 			path = Model;
 			sourceTree = "<group>";
@@ -331,6 +338,8 @@
 			children = (
 				B40000020000000000000001 /* IndexingReliabilityTests.swift */,
 				B50000020000000000000001 /* EmbeddingStoreTests.swift */,
+				BB9000020000000000000002 /* RecoveryIntegrationTests.swift */,
+				BB9000020000000000000001 /* ModelIndexCoordinatorTests.swift */,
 				B60000020000000000000001 /* SimilarityValidationTests.swift */,
 				B70000020000000000000001 /* SearchReliabilityTests.swift */,
 				B30000020000000000000001 /* PerformanceMeasurementTests.swift */,
@@ -510,6 +519,7 @@
 				94E917B82A5A475B00324937 /* DataModel.swift in Sources */,
 				C1A000022C8F000000000001 /* GPUSimilaritySearch.swift in Sources */,
 				C1A000042C8F000000000001 /* EmbeddingStore.swift in Sources */,
+				BB9000010000000000000000 /* ModelIndexCoordinator.swift in Sources */,
 				94E917C82A5A475B00324937 /* SearchResultsView.swift in Sources */,
 				94E917C42A5A475B00324937 /* PhotoViewForMac.swift in Sources */,
 				94E917B32A5A475B00324937 /* BPETokenizer.swift in Sources */,
@@ -530,6 +540,8 @@
 			files = (
 				B40000010000000000000001 /* IndexingReliabilityTests.swift in Sources */,
 				B50000010000000000000001 /* EmbeddingStoreTests.swift in Sources */,
+				BB9000010000000000000002 /* RecoveryIntegrationTests.swift in Sources */,
+				BB9000010000000000000001 /* ModelIndexCoordinatorTests.swift in Sources */,
 				B60000010000000000000001 /* SimilarityValidationTests.swift in Sources */,
 				B70000010000000000000001 /* SearchReliabilityTests.swift in Sources */,
 				B30000010000000000000001 /* PerformanceMeasurementTests.swift in Sources */,
