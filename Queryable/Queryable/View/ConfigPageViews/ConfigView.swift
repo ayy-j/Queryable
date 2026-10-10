@@ -57,6 +57,10 @@ struct ConfigView: View {
                             Task { await photoSearcher.rollbackModel() }
                         }
                     }
+                    Button("Repair damaged model state (preserves indexes)") {
+                        photoSearcher.repairCorruptModelState()
+                    }
+                    .font(.caption)
                 }
                 Section(header: Text("User Guide and Feedback")) {
                     Label("About Queryable", systemImage: "book")

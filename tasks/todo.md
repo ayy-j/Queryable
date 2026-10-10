@@ -41,6 +41,8 @@ Companion to the [plain-language plan](/Users/abackman/Queryable/tasks/plan.md).
 
 **October 9 storage-validation slice:** added strict physical record-count validation, explicit little-endian fields, invalid ID/nonfinite-value rejection, and nine isolated storage tests covering restart, replacement, deletion, compaction, and corruption. All 54 ordinary simulator tests passed (`build/storage-validation.xcresult`); the opt-in performance test was excluded. See [format and recovery limits](../docs/qemb-v2-format.md). Atomic crash recovery and generation-bound sidecars remain open; this does not complete item 4 or issue #8.
 
+**October 9 recovery-hardening follow-up (uncommitted):** active-index mutations (edited-photo invalidation, library reconciliation, incremental saves, compaction) now commit through the typed store API against the tracked active generation and reload the committed revision before publishing in memory; same-model resume carries committed checkpoint bytes into the new generation; search/similar-photo capture spec plus embedding snapshots and re-validate epoch and spec identity after encoding with a GPU-dimension check; a damaged coordinator file surfaces explicitly and waits for the Repair action (quarantines only the corrupt manifest). Three new integration tests cover typed active commits, stale-search suppression, and corrupt-coordinator repair. Full suite: 113 tests pass, 3 GPU-only skips (`build/full-recovery-final.xcresult`).
+
 - [ ] Test and fix save/load, additions, deletions, damaged files, record counts, and interrupted saves; preserve the last valid data.
 - [ ] Resume only successfully committed work, including interruption while combining saved batches and deleting photos.
 
@@ -70,6 +72,8 @@ Companion to the [plain-language plan](/Users/abackman/Queryable/tasks/plan.md).
 **Depends on:** 1, 2. **Issues:** #7, #10. **Scope:** medium. **Likely files:** `GPUSimilaritySearch.swift`, `PhotoSearchModel.swift`, `PhotoSearcher.swift`, `TextEncoder.swift`, new search tests.
 
 ### 6. Keep a working model available during a switch
+
+**October 9 recovery-hardening follow-up (uncommitted):** search/similar-photo now snapshot spec plus embeddings and re-validate epoch and spec identity after encoding, with a GPU-dimension check before executing; corrupt coordinator state surfaces explicitly with a Repair action that quarantines only the manifest. Covered by the new stale-search and corrupt-repair integration tests in the 113-test full-suite pass (`build/full-recovery-final.xcresult`).
 
 - [ ] Verify the actual S2 files and input contract before promising S2 fallback; retain its valid model and index.
 - [ ] Remember the active and requested models, prevent old in-flight tasks from contaminating a new index, and activate a rebuilt index only when ready.

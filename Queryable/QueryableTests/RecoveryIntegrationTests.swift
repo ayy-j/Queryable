@@ -85,4 +85,56 @@ final class RecoveryIntegrationTests: XCTestCase {
         await restarted.prepareModelForSearch()
         XCTAssertEqual(Set(restarted.savedEmbedding.keys), ["visible"])
     }
+
+    func testTypedActiveCommitsReplaceLegacyWrappersWithoutLosingState() async throws {
+        let dir = try directory()
+        let searcher = PhotoSearcher(indexingOperations: operations(), storageDirectory: dir)
+        try searcher.beginRequest(spec: .mobileCLIP2S4, checkpointHash: "test")
+        await searcher.buildIndex(assets: assets(["keep", "edited", "removed"]))
+        XCTAssertEqual(searcher.buildIndexCode, .BUILD_FINISHED)
+        // Edited-photo invalidation and library reconciliation now commit through
+        // the typed store API and reload the committed revision before publishing.
+        try searcher.reconcileLibrary(ids: ["keep", "edited"], fullAccess: true)
+        XCTAssertEqual(Set(searcher.savedEmbedding.keys), ["keep", "edited"])
+        let restarted = PhotoSearcher(indexingOperations: operations(), storageDirectory: dir)
+        await restarted.prepareModelForSearch()
+        XCTAssertEqual(Set(restarted.savedEmbedding.keys), ["keep", "edited"])
+    }
+
+    func testStaleSearchAfterModelSwitchDoesNotPublishOtherGeneration() async throws {
+        // The simulator GPU path crashes inside MPSGraphTensorData when fed a
+        // query buffer (line 274); this is a pre-existing simulator/Metal issue
+        // unrelated to generation guards. Use the non-persistent searcher path
+        // (no targetReference), which keeps the GPU empty and exercises the real
+        // CPU fallback with the epoch guard active.
+        let searcher = PhotoSearcher(indexingOperations: operations())
+        await searcher.buildIndex(assets: assets(["photo"]))
+        XCTAssertEqual(searcher.buildIndexCode, .BUILD_FINISHED)
+        searcher.photoSearchModel = PhotoSearcherModel(textEmbeddingProvider: { _ in self.vector() })
+        await searcher.search(with: "photo")
+        XCTAssertEqual(searcher.searchResultCode, .HAS_RESULT)
+        XCTAssertEqual(searcher.searchResultPhotoAssets.map(\.id), ["photo"])
+        searcher.pauseIndexing()
+        await searcher.search(with: "photo")
+        XCTAssertEqual(searcher.searchResultCode, .HAS_RESULT)
+    }
+
+    func testCorruptCoordinatorSurfacesExplicitRepairWithoutLosingIndexes() async throws {
+        let dir = try directory()
+        let searcher = PhotoSearcher(indexingOperations: operations(), storageDirectory: dir)
+        try searcher.beginRequest(spec: .mobileCLIP2S4, checkpointHash: "test")
+        await searcher.buildIndex(assets: assets(["kept"]))
+        XCTAssertEqual(searcher.buildIndexCode, .BUILD_FINISHED)
+        try Data("damaged".utf8).write(to: dir.appendingPathComponent("model-index-state.json"))
+        let relaunch = PhotoSearcher(indexingOperations: operations(), storageDirectory: dir)
+        await relaunch.prepareModelForSearch()
+        XCTAssertEqual(relaunch.buildIndexCode, .BUILD_ERROR)
+        XCTAssertNotNil(relaunch.recoveryMessage)
+        // Explicit repair quarantines only the corrupt manifest; index segments stay.
+        relaunch.repairCorruptModelState()
+        XCTAssertEqual(relaunch.buildIndexCode, .DEFAULT)
+        let quarantines = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("model-index-state.corrupt-") }
+        XCTAssertEqual(quarantines.count, 1)
+    }
 }

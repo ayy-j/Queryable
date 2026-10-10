@@ -154,6 +154,10 @@ struct IndexingRecoveryView: View {
             Button("Resume / retry remaining photos") {
                 Task { await photoSearcher.resumeIndexing() }
             }
+            Button("Repair damaged model state (preserves indexes)") {
+                photoSearcher.repairCorruptModelState()
+            }
+            .font(.caption)
             if photoSearcher.canRollback {
                 Button("Keep previous model") {
                     Task { await photoSearcher.rollbackModel() }

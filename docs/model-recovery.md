@@ -32,6 +32,9 @@ references and additionally use per-run cancellation tokens. Every asynchronous
 completion must check its token and matching reference before publishing results,
 writing a batch or activating. A requested rebuild does not invalidate queries
 against the still-active reference. Activation/rollback invalidate active caches.
+Search and similar-photo queries additionally snapshot their spec and embeddings
+and re-validate epoch plus spec identity after encoding; the GPU path validates
+its dimension against the captured spec before executing.
 
 ## Recovery, cancellation and migration
 

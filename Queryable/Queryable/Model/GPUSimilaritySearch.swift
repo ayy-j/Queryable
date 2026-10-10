@@ -34,6 +34,7 @@ class GPUSimilaritySearch {
     private let embeddingDim: Int
 
     var count: Int { ids.count }
+    var embeddingDimension: Int { embeddingDim }
 
     private struct CachedGraph {
         let graph: MPSGraph

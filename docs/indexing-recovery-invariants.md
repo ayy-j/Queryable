@@ -27,14 +27,27 @@ and model coordinator documents for their exact durable encodings.
   retained previous generation before switching the durable pointer.
 * Storage errors never mean an empty library. Corruption/incompatibility is shown
   explicitly; original files remain available and rebuild is an explicit action.
+* Active-index mutations (edited-photo invalidation, library reconciliation,
+  incremental saves, compaction) commit through the typed store API against the
+  tracked active generation and reload the committed revision before publishing
+  in memory. The legacy Boolean wrappers remain only for compatibility tests.
+* Same-model resume carries the committed checkpoint bytes (required IDs,
+  versions, completion) into the new generation, not just version dates.
+* A damaged coordinator file is never auto-replaced: startup surfaces it and
+  waits for the explicit Repair action, which quarantines only the corrupt
+  manifest beside the retained indexes.
 
 ## Lifecycle and Photos policy
 
 Image requests and indexing are cancellable. Check epoch after every suspension
-before accepting results. Text prediction and ranking run serially on the main
-actor; model changes cannot interleave with their synchronous publication.
-Image tower ownership ends on every build exit; text tower is acquired for text
-queries and released afterward. Similar-photo search uses stored vectors.
+before accepting results. Text and similar-photo queries capture their model spec,
+embedding snapshot, and epoch before encoding; after every suspension they
+re-check the epoch and spec identity before publishing, so a model switch cannot
+mix one generation's query with another generation's index. Ranking validates the
+GPU index dimension against the captured spec and falls back to the captured CPU
+snapshot on mismatch. Image tower ownership ends on every build exit; text tower
+is acquired for text queries and released afterward. Similar-photo search uses
+stored vectors.
 Backgrounding, low-power mode, or serious/critical thermal state pauses work at a
 safe boundary. Batch size remains 32 pending device measurement; this policy is
 conservative and does not claim a tuned throughput or energy budget.

@@ -100,6 +100,7 @@ class PhotoSearcher: ObservableObject {
     private var epoch = UUID()
     private var indexingTask: Task<Void, Never>?
     private var coordinator: ModelIndexCoordinator?
+    private var activeReference: ModelIndexReference?
     private var targetReference: ModelIndexReference?
     private var targetStore: EmbeddingStore?
     private var targetEmbedding = [String: MLMultiArray]()
@@ -169,6 +170,7 @@ class PhotoSearcher: ObservableObject {
         }
         modelSpec = spec
         photoSearchModel = PhotoSearcherModel(spec: spec)
+        activeReference = reference
         embeddingStore = activeStore
         savedEmbedding = snapshot.embeddings
         activeVersions = try snapshot.checkpoint.map { try JSONDecoder().decode(IndexingCheckpoint.self, from: $0).versions } ?? [:]
@@ -247,6 +249,7 @@ class PhotoSearcher: ObservableObject {
             _ = validation
             let restored = try coordinator.rollback()
             try publishActive(restored)
+            activeReference = restored
             targetReference = nil; self.targetStore = nil; targetEmbedding.removeAll(); buildingEmbedding.removeAll()
             indexingSpec = spec
             recoveryMessage = "Previous index restored."
@@ -324,7 +327,18 @@ class PhotoSearcher: ObservableObject {
         guard !isBuildingIndex, !isLoadingImageEncoder else { return }
         let captured = epoch
         do {
-            if coordinator == nil { coordinator = try ModelIndexCoordinator(directoryURL: storageDirectory) }
+            if coordinator == nil {
+                do {
+                    coordinator = try ModelIndexCoordinator(directoryURL: storageDirectory)
+                } catch ModelIndexCoordinatorError.corruptState {
+                    // Never auto-replace a damaged coordinator file: surface it and
+                    // wait for the explicit user recovery action instead.
+                    recoveryMessage = "Saved model state is damaged and was preserved. Use Repair to quarantine it and start fresh, or reinstall without deleting indexes."
+                    buildIndexCode = .BUILD_ERROR
+                    publishCoordinatorState()
+                    return
+                }
+            }
             guard let coordinator else { return }
             if let active = coordinator.state.active {
                 let spec = try resolveSpec(active)
@@ -358,6 +372,27 @@ class PhotoSearcher: ObservableObject {
             publishCoordinatorState()
         } catch is CancellationError { return }
         catch { reportRecovery(error) }
+    }
+
+    /// Explicit user recovery for a damaged coordinator file. Quarantines only
+    /// the corrupt manifest beside the retained indexes, then resets to empty state.
+    func repairCorruptModelState() {
+        pauseIndexing()
+        do {
+            coordinator = try ModelIndexCoordinator.recoverCorruptState(directoryURL: storageDirectory)
+            activeReference = nil
+            targetReference = nil
+            targetStore = nil
+            targetEmbedding.removeAll()
+            buildingEmbedding.removeAll()
+            checkpoint = IndexingCheckpoint()
+            searchResultCode = .NEVER_INDEXED
+            buildIndexCode = .DEFAULT
+            recoveryMessage = "Damaged model state was quarantined; indexes were preserved. Select a model to start a fresh rebuild."
+            publishCoordinatorState()
+        } catch {
+            reportRecovery(error)
+        }
     }
 
     func fetchPhotos() async {
@@ -399,12 +434,25 @@ class PhotoSearcher: ObservableObject {
                 let hash = try await Task.detached(priority: .utility) { try spec.checkpointHash(resourcesAt: url) }.value
                 try checkEpoch(captured)
                 try beginRequest(spec: spec, checkpointHash: hash)
-                // Updating the current model retains its already committed vectors.
-                targetEmbedding = savedEmbedding
-                checkpoint.versions = activeVersions
-                if !targetEmbedding.isEmpty {
-                    _ = try targetStore!.commit(upserts: targetEmbedding, checkpoint: nil,
-                                                generation: targetReference!.generation)
+                // Updating the current model retains its already committed vectors
+                // and their durable checkpoint (required IDs, versions, completion).
+                // Without the checkpoint bytes, resume would lose requiredIDs and
+                // could declare completion while photos are still missing.
+                if let activeStore = embeddingStore, let committed = try activeStore.load() {
+                    targetEmbedding = committed.embeddings
+                    if let data = committed.checkpoint {
+                        checkpoint = try JSONDecoder().decode(IndexingCheckpoint.self, from: data)
+                    } else {
+                        checkpoint.versions = activeVersions
+                    }
+                    if !targetEmbedding.isEmpty {
+                        _ = try targetStore!.commit(upserts: targetEmbedding,
+                                                    checkpoint: try JSONEncoder().encode(checkpoint),
+                                                    generation: targetReference!.generation)
+                    }
+                } else {
+                    targetEmbedding = savedEmbedding
+                    checkpoint.versions = activeVersions
                 }
             }
             guard let ref = targetReference else { throw EmbeddingStoreError.notReady }
@@ -563,8 +611,11 @@ class PhotoSearcher: ObservableObject {
             _ = try targetStore.commit(deleting: ids, checkpoint: try JSONEncoder().encode(checkpoint), generation: ref.generation)
             for id in ids { targetEmbedding.removeValue(forKey: id) }
         }
-        if let embeddingStore {
-            guard embeddingStore.markDeleted(Array(ids)) else { throw EmbeddingStoreError.writeFailed }
+        if let activeStore = embeddingStore, let activeRef = activeReference {
+            _ = try activeStore.commit(deleting: Set(ids), checkpoint: nil, generation: activeRef.generation)
+            guard let snapshot = try activeStore.load(), snapshot.generation == activeRef.generation else {
+                throw EmbeddingStoreError.notReady
+            }
             for id in ids { savedEmbedding.removeValue(forKey: id); activeVersions.removeValue(forKey: id) }
             gpuSearch?.removeEmbeddings(ids)
         }
@@ -586,8 +637,11 @@ class PhotoSearcher: ObservableObject {
         }
         // Deletions affect the old active index as well; permissions never do.
         let activeDeleted = fullAccess ? Set(savedEmbedding.keys).subtracting(ids) : []
-        if !activeDeleted.isEmpty, let embeddingStore {
-            guard embeddingStore.markDeleted(Array(activeDeleted)) else { throw EmbeddingStoreError.writeFailed }
+        if !activeDeleted.isEmpty, let activeStore = embeddingStore, let activeRef = activeReference {
+            _ = try activeStore.commit(deleting: activeDeleted, checkpoint: nil, generation: activeRef.generation)
+            guard let snapshot = try activeStore.load(), snapshot.generation == activeRef.generation else {
+                throw EmbeddingStoreError.notReady
+            }
             for id in activeDeleted { savedEmbedding.removeValue(forKey: id) }
             gpuSearch?.removeEmbeddings(activeDeleted)
         }
@@ -602,13 +656,14 @@ class PhotoSearcher: ObservableObject {
     }
 
     func updateEmbedding(new_indexed_results: [String: MLMultiArray]) throws {
-        guard let embeddingStore else { throw EmbeddingStoreError.notReady }
+        guard let activeStore = embeddingStore, let activeRef = activeReference else { throw EmbeddingStoreError.notReady }
         print("Before update, embedding count=\(self.savedEmbedding.count)")
 
-        // Incremental save: only write new embeddings to journal
-        guard embeddingStore.appendNew(new_indexed_results) else {
-            throw EmbeddingStoreError.writeFailed
-        }
+        // Typed commit is the single visibility boundary; verify the committed
+        // revision before publishing in memory so a failed write never mutates state.
+        let revision = try activeStore.commit(upserts: new_indexed_results, checkpoint: nil, generation: activeRef.generation)
+        guard let snapshot = try activeStore.load(), snapshot.revision == revision,
+              snapshot.generation == activeRef.generation else { throw EmbeddingStoreError.writeFailed }
 
         for (key, value) in new_indexed_results {
             self.savedEmbedding[key] = value
@@ -695,10 +750,14 @@ class PhotoSearcher: ObservableObject {
             } else {
                 buildIndexCode = .BUILD_INCOMPLETE
             }
-            if embeddingStore?.needsCompaction() == true {
-                // Compaction is optional: the successful journal save is durable.
-                if embeddingStore?.compact(savedEmbedding) == false {
-                    logger.error("Index compaction failed; retaining the saved journal.")
+            if let activeStore = embeddingStore, let activeRef = activeReference,
+               activeStore.needsCompaction() {
+                // Compaction is optional: the committed segments are durable.
+                do {
+                    _ = try activeStore.commit(upserts: savedEmbedding, checkpoint: nil,
+                                               generation: activeRef.generation, replacing: true)
+                } catch {
+                    logger.error("Index compaction failed; retaining committed segments.")
                 }
             }
         } catch {
@@ -765,11 +824,15 @@ class PhotoSearcher: ObservableObject {
             try coordinator.activate(ref, evidence: ModelIndexActivationEvidence(reference: ref, committedRevision: revision, complete: true))
         } catch {
             // A rename may have committed even if the following durability check failed.
-            if coordinator.state.active == ref { try publishActive(ref) }
+            if coordinator.state.active == ref {
+                activeReference = ref
+                try publishActive(ref)
+            }
             throw error
         }
         try publishActive(ref)
         targetReference = nil; self.targetStore = nil; targetEmbedding.removeAll()
+        activeReference = ref
         recoveryMessage = nil
         publishCoordinatorState()
     }
@@ -783,13 +846,18 @@ class PhotoSearcher: ObservableObject {
      Search Part — GPU-accelerated similarity search
      */
     func search(with query: String) async {
+        // Capture the generation so a model switch during encoding cannot
+        // publish another generation's results into this query.
+        let captured = epoch
+        let searchingSpec = modelSpec
+        let searchingEmbeddings = savedEmbedding
         self.searchString = query
         self.searchErrorMessage = nil
         self.searchResultPhotoAssets = [PhotoAsset]()
 
         self.searchResultCode = .IS_SEARCHING
 
-        if self.savedEmbedding.isEmpty {
+        if searchingEmbeddings.isEmpty {
             print("Never indexed.")
             self.searchResultCode = .NEVER_INDEXED
             return
@@ -800,13 +868,22 @@ class PhotoSearcher: ObservableObject {
         do {
             if indexingOperations == nil {
                 guard let url = resourceURL else { throw PhotoSearchError.encoderNotReady }
-                try photoSearchModel.load_text_encoder(resourcesAt: url, spec: modelSpec)
+                try photoSearchModel.load_text_encoder(resourcesAt: url, spec: searchingSpec)
             }
             defer { photoSearchModel.releaseTextEncoder() }
             let embedding = try photoSearchModel.text_embedding(prompt: query)
-            let ids = try rankedPhotoIDs(query: embedding)
+            try checkEpoch(captured)
+            guard searchingSpec.compatibilityIdentity == modelSpec.compatibilityIdentity else {
+                throw CancellationError()
+            }
+            let ids = try rankedPhotoIDs(query: embedding, embeddings: searchingEmbeddings, spec: searchingSpec)
+            try checkEpoch(captured)
             searchResultPhotoAssets = ids.map { PhotoAsset(identifier: $0) }
             searchResultCode = ids.isEmpty ? .NO_RESULT : .HAS_RESULT
+        } catch is CancellationError {
+            // A stale query after a model switch must not overwrite fresh state.
+            guard captured == epoch else { return }
+            searchResultCode = .MODEL_PREPARED
         } catch {
             searchErrorMessage = searchFailureMessage(for: error)
             searchResultCode = .SEARCH_ERROR
@@ -815,19 +892,31 @@ class PhotoSearcher: ObservableObject {
     }
 
     func similarPhoto(with photoAsset: PhotoAsset) async {
+        let captured = epoch
+        let searchingSpec = modelSpec
+        let searchingEmbeddings = savedEmbedding
         isFindingSimilarPhotos = true
         similarPhotoAssets.removeAll()
         similarPhotoErrorMessage = nil
         defer { isFindingSimilarPhotos = false }
 
         do {
-            guard let embedding = savedEmbedding[photoAsset.id] else {
+            guard let embedding = searchingEmbeddings[photoAsset.id] else {
                 throw PhotoSearchError.referencePhotoMissing
             }
             // Validate before converting so alternate scalar/layout inputs cannot bypass the contract.
-            _ = try SimilarityVectorValidation.norm(of: embedding, dimension: modelSpec.embeddingDimension, id: photoAsset.id)
+            _ = try SimilarityVectorValidation.norm(of: embedding, dimension: searchingSpec.embeddingDimension, id: photoAsset.id)
             let query = MLShapedArray<Float32>(converting: embedding)
-            similarPhotoAssets = try rankedPhotoIDs(query: query).map { PhotoAsset(identifier: $0) }
+            try checkEpoch(captured)
+            guard searchingSpec.compatibilityIdentity == modelSpec.compatibilityIdentity else {
+                throw CancellationError()
+            }
+            similarPhotoAssets = try rankedPhotoIDs(query: query, embeddings: searchingEmbeddings, spec: searchingSpec).map { PhotoAsset(identifier: $0) }
+            try checkEpoch(captured)
+        } catch is CancellationError {
+            guard captured == epoch else { return }
+            similarPhotoErrorMessage = "The search model changed. Try again."
+            logger.error("Similar-photo search superseded by a model change.")
         } catch {
             similarPhotoErrorMessage = searchFailureMessage(for: error)
             logger.error("Similar-photo search failed: \(error.localizedDescription)")
@@ -835,23 +924,30 @@ class PhotoSearcher: ObservableObject {
     }
 
     /// Both search surfaces share validation, backend selection, and result publication rules.
-    private func rankedPhotoIDs(query: MLShapedArray<Float32>) throws -> [String] {
-        _ = try SimilarityVectorValidation.norm(of: query, dimension: modelSpec.embeddingDimension)
+    /// Callers pass the snapshot they searched so a concurrent model switch cannot
+    /// mix one generation's query with another generation's index.
+    private func rankedPhotoIDs(query: MLShapedArray<Float32>, embeddings: [String: MLMultiArray]? = nil, spec: EmbeddingModelSpec? = nil) throws -> [String] {
+        let searchingSpec = spec ?? modelSpec
+        let searchingEmbeddings = embeddings ?? savedEmbedding
+        _ = try SimilarityVectorValidation.norm(of: query, dimension: searchingSpec.embeddingDimension)
         let scores: [String: Float]
         if let gpu = gpuSearch, gpu.count > 0 {
+            guard gpu.embeddingDimension == searchingSpec.embeddingDimension else {
+                throw SimilaritySearchError.indexUnavailable
+            }
             do {
                 scores = try gpu.search(queryEmbedding: query)
             } catch SimilaritySearchError.indexUnavailable {
                 gpuSearch = nil
                 logger.error("GPU index unavailable; using validated CPU search.")
-                scores = try photoSearchModel.similarityScores(query: query, embeddings: savedEmbedding)
+                scores = try photoSearchModel.similarityScores(query: query, embeddings: searchingEmbeddings)
             } catch SimilaritySearchError.resultsUnavailable {
                 gpuSearch = nil
                 logger.error("GPU returned no scores; using validated CPU search.")
-                scores = try photoSearchModel.similarityScores(query: query, embeddings: savedEmbedding)
+                scores = try photoSearchModel.similarityScores(query: query, embeddings: searchingEmbeddings)
             }
         } else {
-            scores = try photoSearchModel.similarityScores(query: query, embeddings: savedEmbedding)
+            scores = try photoSearchModel.similarityScores(query: query, embeddings: searchingEmbeddings)
         }
         var visibleIDs: Set<String>?
         if indexingOperations == nil {
