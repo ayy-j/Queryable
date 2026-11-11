@@ -102,6 +102,15 @@ final class PhotoSearchModelTests: XCTestCase {
 
 @MainActor
 final class SearchReliabilityTests: XCTestCase {
+    private func alternateSpecAt768Dimensions() throws -> EmbeddingModelSpec {
+        try .sigLIPSo400m(revision: "search-identity-test", imageModelName: "image.mlmodelc",
+                          textModelName: "text.mlmodelc", tokenizerAssets: ["tokenizer.json"],
+                          imagePreprocessing: EmbeddingModelSpec.mobileCLIP2S4.imagePreprocessing,
+                          imageInputName: "image", imageOutputName: "embedding",
+                          textInputName: "tokens", textInputType: .multiArrayInt32,
+                          textOutputName: "embedding", embeddingDimension: 768)
+    }
+
     private func searcher(spec: EmbeddingModelSpec = .mobileCLIP2S4) async -> PhotoSearcher {
         let dimension = spec.embeddingDimension
         let searcher = PhotoSearcher(modelSpec: spec, indexingOperations: PhotoIndexingOperations(
@@ -182,6 +191,44 @@ final class SearchReliabilityTests: XCTestCase {
         await searcher.similarPhoto(with: PhotoAsset(identifier: "search-test-photo", phAsset: nil))
         XCTAssertNil(searcher.similarPhotoErrorMessage)
         XCTAssertEqual(searcher.similarPhotoAssets.map(\.id), ["search-test-photo"])
+    }
+
+    func testTextAndSimilarPhotoCPUFallbackPreserveRankingAndIDs() async {
+        let vectors = [
+            searchVector(768, [1, 0]),
+            searchVector(768, [1, 1]),
+            searchVector(768, [0, 1])
+        ]
+        let searcher = PhotoSearcher(indexingOperations: PhotoIndexingOperations(
+            fetchImage: { _, _ in UIImage() },
+            encodeBatch: { _ in vectors },
+            encodeImage: { _ in vectors[0] },
+            save: { _ in }
+        ))
+        searcher.TOPK_SIM = 10
+        let ids = ["a-best", "b-middle", "c-orthogonal"]
+        await searcher.buildIndex(assets: ids.map { PhotoAsset(identifier: $0, phAsset: nil) })
+        XCTAssertEqual(Set(searcher.savedEmbedding.keys), Set(ids))
+
+        searcher.photoSearchModel = PhotoSearcherModel(textEmbeddingProvider: { _ in searchVector() })
+        await searcher.search(with: "rank these")
+        XCTAssertEqual(searcher.searchResultCode, .HAS_RESULT)
+        XCTAssertEqual(searcher.searchResultPhotoAssets.map(\.id), ids)
+
+        await searcher.similarPhoto(with: PhotoAsset(identifier: "b-middle", phAsset: nil))
+        XCTAssertNil(searcher.similarPhotoErrorMessage)
+        XCTAssertEqual(searcher.similarPhotoAssets.map(\.id), ["b-middle", "a-best", "c-orthogonal"])
+    }
+
+    func testTextQueryWithIncompatibleModelIdentityCannotUseCPUFallback() async throws {
+        let searcher = await searcher()
+        searcher.photoSearchModel = PhotoSearcherModel(
+            spec: try alternateSpecAt768Dimensions(),
+            textEmbeddingProvider: { _ in searchVector() }
+        )
+        await searcher.search(with: "test")
+        XCTAssertEqual(searcher.searchResultCode, .SEARCH_ERROR)
+        XCTAssertTrue(searcher.searchResultPhotoAssets.isEmpty)
     }
 
     func testEmptyIndexRemainsNeverIndexedWithoutLoadingTextModel() async {

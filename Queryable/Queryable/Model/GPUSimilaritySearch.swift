@@ -18,6 +18,20 @@ import MetalPerformanceShaders
 import MetalPerformanceShadersGraph
 import Accelerate
 
+struct SimilarityModelIdentity: Equatable {
+    let compatibilityIdentity: String
+    let checkpointHash: String?
+
+    init(compatibilityIdentity: String, checkpointHash: String? = nil) {
+        self.compatibilityIdentity = compatibilityIdentity
+        self.checkpointHash = checkpointHash
+    }
+
+    init(spec: EmbeddingModelSpec, checkpointHash: String? = nil) {
+        self.init(compatibilityIdentity: spec.compatibilityIdentity, checkpointHash: checkpointHash)
+    }
+}
+
 class GPUSimilaritySearch {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
@@ -32,6 +46,7 @@ class GPUSimilaritySearch {
     private var cachedGraph: CachedGraph?
 
     private let embeddingDim: Int
+    let modelIdentity: SimilarityModelIdentity
 
     var count: Int { ids.count }
     var embeddingDimension: Int { embeddingDim }
@@ -44,7 +59,7 @@ class GPUSimilaritySearch {
         let n: Int
     }
 
-    init?(embeddingDimension: Int) {
+    init?(embeddingDimension: Int, modelIdentity: SimilarityModelIdentity) {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue(),
               embeddingDimension > 0 else {
@@ -53,6 +68,7 @@ class GPUSimilaritySearch {
         self.device = device
         self.commandQueue = commandQueue
         self.embeddingDim = embeddingDimension
+        self.modelIdentity = modelIdentity
     }
 
     /// Build the GPU index from the in-memory embedding dictionary.
@@ -257,7 +273,8 @@ class GPUSimilaritySearch {
 
     /// Compute similarity scores for a query embedding against all stored embeddings.
     /// Returns [photoID: similarity_score].
-    func search(queryEmbedding: MLShapedArray<Float32>) throws -> [String: Float] {
+    func search(queryEmbedding: MLShapedArray<Float32>, modelIdentity: SimilarityModelIdentity) throws -> [String: Float] {
+        try SimilarityVectorValidation.validateModelIdentity(index: self.modelIdentity, query: modelIdentity)
         let queryNorm = try SimilarityVectorValidation.norm(of: queryEmbedding, dimension: embeddingDim)
         let n = ids.count
         guard n > 0 else { return [:] }
@@ -330,6 +347,10 @@ class GPUSimilaritySearch {
 /// Validation is independent of Metal so malformed inputs can be checked on every host.
 /// Only [D] and [1,D] contiguous Float32 vectors are supported by the raw-pointer path.
 enum SimilarityVectorValidation {
+    static func validateModelIdentity(index: SimilarityModelIdentity, query: SimilarityModelIdentity) throws {
+        guard index == query else { throw SimilaritySearchError.incompatibleModelIdentity }
+    }
+
     static func norm(of embedding: MLMultiArray, dimension: Int, id: String) throws -> Double {
         guard embedding.dataType == .float32, embedding.count == dimension else {
             throw SimilaritySearchError.invalidEmbedding(id: id, expected: dimension, actual: embedding.count)
@@ -377,6 +398,7 @@ enum SimilaritySearchError: Error, Equatable {
     case unsupportedLayout
     case nonFiniteVector
     case zeroNormVector
+    case incompatibleModelIdentity
     case indexUnavailable
     case resultsUnavailable
     case bufferAllocationFailed

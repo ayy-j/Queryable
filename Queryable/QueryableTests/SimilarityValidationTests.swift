@@ -101,13 +101,34 @@ final class SimilarityValidationTests: XCTestCase {
         }
     }
 
+    func testModelIdentityMismatchIsRejectedBeforeGPUExecution() throws {
+        let indexIdentity = SimilarityModelIdentity(compatibilityIdentity: "model-a", checkpointHash: "weights-a")
+        let otherCheckpoint = SimilarityModelIdentity(compatibilityIdentity: "model-a", checkpointHash: "weights-b")
+        let otherModel = SimilarityModelIdentity(compatibilityIdentity: "model-b", checkpointHash: "weights-a")
+        assertError(.incompatibleModelIdentity) {
+            try SimilarityVectorValidation.validateModelIdentity(index: indexIdentity, query: otherCheckpoint)
+        }
+        assertError(.incompatibleModelIdentity) {
+            try SimilarityVectorValidation.validateModelIdentity(index: indexIdentity, query: otherModel)
+        }
+        XCTAssertNoThrow(try SimilarityVectorValidation.validateModelIdentity(index: indexIdentity, query: indexIdentity))
+
+        let gpu = try makeGPU(768, modelIdentity: indexIdentity)
+        try gpu.buildIndex(from: ["photo": MLMultiArray(vector(768))])
+        assertError(.incompatibleModelIdentity) {
+            try gpu.search(queryEmbedding: vector(768), modelIdentity: otherCheckpoint)
+        }
+        XCTAssertEqual(gpu.count, 1)
+    }
+
     func testEmptyGPUIndexStillRejectsInvalidQueriesAndMutations() throws {
-        guard let gpu = GPUSimilaritySearch(embeddingDimension: 768) else {
+        let identity = SimilarityModelIdentity(compatibilityIdentity: "empty-index-test", checkpointHash: "test")
+        guard let gpu = GPUSimilaritySearch(embeddingDimension: 768, modelIdentity: identity) else {
             throw XCTSkip("Metal unavailable; device-independent validation is covered separately")
         }
-        XCTAssertTrue(try gpu.search(queryEmbedding: vector(768)).isEmpty)
-        assertError(.zeroNormVector) { try gpu.search(queryEmbedding: vector(768, value: 0)) }
-        assertError(.nonFiniteVector) { try gpu.search(queryEmbedding: vector(768, value: .nan)) }
+        XCTAssertTrue(try search(gpu, query: vector(768)).isEmpty)
+        assertError(.zeroNormVector) { try search(gpu, query: vector(768, value: 0)) }
+        assertError(.nonFiniteVector) { try search(gpu, query: vector(768, value: .nan)) }
         assertError(.zeroNormVector) { try gpu.buildIndex(from: ["blank": MLMultiArray(vector(768, value: 0))]) }
         assertError(.nonFiniteVector) { try gpu.addEmbeddings(["nan": MLMultiArray(vector(768, value: .nan))]) }
         XCTAssertEqual(gpu.count, 0)
@@ -122,11 +143,19 @@ final class SimilarityValidationTests: XCTestCase {
         #endif
     }
 
-    private func makeGPU(_ dimension: Int) throws -> GPUSimilaritySearch {
-        guard let gpu = GPUSimilaritySearch(embeddingDimension: dimension) else {
+    private func makeGPU(_ dimension: Int, modelIdentity: SimilarityModelIdentity? = nil) throws -> GPUSimilaritySearch {
+        let identity = modelIdentity ?? SimilarityModelIdentity(
+            compatibilityIdentity: "test-model-\(dimension)",
+            checkpointHash: "test-checkpoint"
+        )
+        guard let gpu = GPUSimilaritySearch(embeddingDimension: dimension, modelIdentity: identity) else {
             throw XCTSkip("Metal unavailable")
         }
         return gpu
+    }
+
+    private func search(_ gpu: GPUSimilaritySearch, query: MLShapedArray<Float32>) throws -> [String: Float] {
+        try gpu.search(queryEmbedding: query, modelIdentity: gpu.modelIdentity)
     }
 
     /// Dense vectors with a known component along the all-ones query and an
@@ -150,7 +179,7 @@ final class SimilarityValidationTests: XCTestCase {
         // Declared before execution: allow 0.002 absolute error for Float16
         // inputs and Float32 matmul. Scores are separated by much more than this.
         let absoluteTolerance = 2e-3
-        let scores = try gpu.search(queryEmbedding: query)
+        let scores = try search(gpu, query: query)
         let reference = expected.mapValues { cpuCosine($0.scalars, query.scalars) }
         XCTAssertEqual(Set(scores.keys), Set(expected.keys), file: file, line: line)
         for (id, expectedScore) in reference {
@@ -189,7 +218,7 @@ final class SimilarityValidationTests: XCTestCase {
             XCTAssertEqual(Set(gpu.ids), ["untouched", "added"])
             try gpu.buildIndex(from: [:])
             XCTAssertEqual(gpu.count, 0)
-            XCTAssertTrue(try gpu.search(queryEmbedding: vector(dimension)).isEmpty)
+            XCTAssertTrue(try search(gpu, query: vector(dimension)).isEmpty)
         }
     }
 
@@ -278,13 +307,13 @@ final class SimilarityValidationTests: XCTestCase {
             try assertScores(gpu, expected: expected, query: query)
             gpu.removeEmbeddings(Set(expected.keys))
             XCTAssertEqual(gpu.count, 0)
-            XCTAssertTrue(try gpu.search(queryEmbedding: query).isEmpty)
+            XCTAssertTrue(try search(gpu, query: query).isEmpty)
             expected = ["rebuilt": knownVector(dimension, along: -0.8, across: 0.6)]
             try gpu.buildIndex(from: expected.mapValues { MLMultiArray($0) })
             try assertScores(gpu, expected: expected, query: query)
             try gpu.buildIndex(from: [:])
             XCTAssertTrue(gpu.ids.isEmpty)
-            XCTAssertTrue(try gpu.search(queryEmbedding: query).isEmpty)
+            XCTAssertTrue(try search(gpu, query: query).isEmpty)
             try gpu.addEmbeddings(expected.mapValues { MLMultiArray($0) })
             try assertScores(gpu, expected: expected, query: query)
         }

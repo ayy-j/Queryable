@@ -53,11 +53,18 @@ final class PerformanceMeasurementTests: XCTestCase {
             let missing = spec.missingArtifacts(resourcesAt: resources)
             guard missing.isEmpty else { throw BenchmarkError.invalid("Missing model artifacts: \(missing.joined(separator: ", "))") }
             var search: GPUSimilaritySearch?
+            var searchIdentity: SimilarityModelIdentity?
             if config.includeSearch {
-                guard let gpu = GPUSimilaritySearch(embeddingDimension: spec.embeddingDimension) else {
+                let identity = SimilarityModelIdentity(
+                    spec: spec,
+                    checkpointHash: try spec.checkpointHash(resourcesAt: resources)
+                )
+                guard let gpu = GPUSimilaritySearch(embeddingDimension: spec.embeddingDimension,
+                                                   modelIdentity: identity) else {
                     throw BenchmarkError.invalid("Metal search is unavailable on this destination")
                 }
                 search = gpu
+                searchIdentity = identity
             }
             var imageEncoder: ImgEncoder?
             report.metrics["image_model_load"] = try recordMeasurement(samples: 1, sampler: sampler) {
@@ -96,12 +103,12 @@ final class PerformanceMeasurementTests: XCTestCase {
             for _ in 0..<config.warmups { _ = try autoreleasepool { try query() } }
             report.metrics["text_query"] = try recordMeasurement(samples: config.samples, sampler: sampler) { _ = try query() }
             let fixedQuery = try query()
-            if let gpu = search {
+            if let gpu = search, let searchIdentity {
               for count in config.indexSizes {
                 let vectors = try makeVectors(count: count, dimension: spec.embeddingDimension)
                 report.metrics["index_build_\(count)"] = try recordMeasurement(samples: 1, workItems: count, sampler: sampler) { try gpu.buildIndex(from: vectors) }
                 func rank(_ embedding: MLShapedArray<Float32>) throws {
-                    let scores = try gpu.search(queryEmbedding: embedding)
+                    let scores = try gpu.search(queryEmbedding: embedding, modelIdentity: searchIdentity)
                     guard scores.count == count, scores.values.allSatisfy({ $0.isFinite }) else {
                         throw BenchmarkError.invalid("Search returned incomplete or nonfinite scores")
                     }
