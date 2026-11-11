@@ -21,6 +21,11 @@ A valid query on an empty index returns an empty dictionary. An invalid query on
 an empty index still throws. Missing state for a nonempty index, missing graph
 results, and nonfinite returned scores throw rather than appearing as successful
 empty results. Build/add validation failures leave the existing index intact.
+Each GPU index is bound to the active model's compatibility identity and
+checkpoint hash, and a query with a different identity is rejected before
+graph execution. The PhotoSearcher CPU path also checks the saved-vector and
+text-encoder identities against the selected model; model publication
+constructs a fresh GPU index.
 
 `SimilarityValidationTests` covers all four required dimensions (512, 768, 1152,
 1536), supported shapes, incorrect lengths, matrix shapes with the same element
@@ -61,8 +66,9 @@ dimensions with absolute tolerance `1e-6`, invalid query/index inputs, large fin
 vectors, missing encoders, prediction failures, and invalid model outputs.
 `SearchReliabilityTests` exercises unloaded/failed/invalid text prediction,
 successful retry through the real CPU fallback, S2 dimension selection,
-empty-index behavior, and missing/successful similar-photo requests. Generated
-inputs and injected saves avoid changing the real saved index.
+text/similar-photo ID ranking, incompatible text-model rejection, empty-index
+behavior, and missing/successful similar-photo requests. Generated inputs and
+injected saves avoid changing the real saved index.
 
 ## Fixed-context text input
 
@@ -73,14 +79,14 @@ source rule and coverage limits. Raw token fixtures remain unchanged.
 
 ## Remaining acceptance work
 
-Physical iOS GPU-vs-CPU ranking checks, model/index identity at activation,
-independent tokenizer parity checks, and
-physical-device UI/error walkthroughs remain open under #7/#10/#11. A GPU index
-containing a legacy blank vector fails build validation; storage preserves those
-records for the separate re-index repair path. Device graph execution remains
-required for iOS ranking acceptance. Native Mac dense-vector mutation/ranking
-checks now pass; simulator tests do not execute these graphs. Backend-failure
-recovery and Float32 accumulation latency/peak-memory measurements remain open.
+Physical iOS GPU-vs-CPU ranking checks, model-generation activation coverage,
+independent tokenizer parity checks, and physical-device UI/error walkthroughs
+remain open under #7/#10/#11. A GPU index containing a legacy blank vector fails
+build validation; storage preserves those records for the separate re-index
+repair path. Device graph execution remains required for iOS ranking
+acceptance. Native Mac dense-vector mutation/ranking checks now pass; simulator
+tests do not execute these graphs. Backend-failure recovery and Float32
+accumulation latency/peak-memory measurements remain open.
 
 Use the simulator command in [the test guide](test-infrastructure-plan.md),
 optionally adding `-only-testing:QueryableTests/SimilarityValidationTests`.

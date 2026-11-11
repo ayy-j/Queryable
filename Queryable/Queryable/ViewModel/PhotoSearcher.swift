@@ -81,6 +81,7 @@ class PhotoSearcher: ObservableObject {
     @Published var searchString: String = ""
 
     private(set) var savedEmbedding = [String: MLMultiArray]()
+    private(set) var savedEmbeddingModelIdentity: SimilarityModelIdentity
     private(set) var buildingEmbedding = [String: MLMultiArray]()
     private var curIndexingPhoto: UIImage = UIImage(systemName: "photo")!
     private var imageRequestID: PHImageRequestID?
@@ -173,8 +174,10 @@ class PhotoSearcher: ObservableObject {
         activeReference = reference
         embeddingStore = activeStore
         savedEmbedding = snapshot.embeddings
+        savedEmbeddingModelIdentity = SimilarityModelIdentity(spec: spec, checkpointHash: reference.checkpointHash)
         activeVersions = try snapshot.checkpoint.map { try JSONDecoder().decode(IndexingCheckpoint.self, from: $0).versions } ?? [:]
-        gpuSearch = GPUSimilaritySearch(embeddingDimension: spec.embeddingDimension)
+        gpuSearch = GPUSimilaritySearch(embeddingDimension: spec.embeddingDimension,
+                                        modelIdentity: savedEmbeddingModelIdentity)
         do { try gpuSearch?.buildIndex(from: savedEmbedding) } catch { gpuSearch = nil }
         searchResultPhotoAssets.removeAll()
         similarPhotoAssets.removeAll()
@@ -305,15 +308,18 @@ class PhotoSearcher: ObservableObject {
     init(modelSpec: EmbeddingModelSpec = .appDefault,
          indexingOperations: PhotoIndexingOperations? = nil,
          storageDirectory: URL? = nil) {
+        let modelIdentity = SimilarityModelIdentity(spec: modelSpec)
         self.modelSpec = modelSpec
         self.indexingSpec = modelSpec
+        self.savedEmbeddingModelIdentity = modelIdentity
         self.storageDirectory = storageDirectory ?? URL.documentsDirectory
         self.persistentTesting = storageDirectory != nil
         self.photoSearchModel = PhotoSearcherModel(spec: modelSpec)
         self.indexingOperations = indexingOperations
         let defaultTOPK_SIM = UserDefaults.standard.object(forKey: "TOPK_SIM") as? Int ?? 120
         self.TOPK_SIM = defaultTOPK_SIM
-        self.gpuSearch = GPUSimilaritySearch(embeddingDimension: modelSpec.embeddingDimension)
+        self.gpuSearch = GPUSimilaritySearch(embeddingDimension: modelSpec.embeddingDimension,
+                                             modelIdentity: modelIdentity)
     }
 
     func changeState(from statusCode1: BUILD_INDEX_CODE, to statusCode2: BUILD_INDEX_CODE) {
@@ -876,6 +882,10 @@ class PhotoSearcher: ObservableObject {
             guard searchingSpec.compatibilityIdentity == modelSpec.compatibilityIdentity else {
                 throw CancellationError()
             }
+            try SimilarityVectorValidation.validateModelIdentity(
+                index: searchModelIdentity(for: searchingSpec),
+                query: searchModelIdentity(for: photoSearchModel.spec)
+            )
             let ids = try rankedPhotoIDs(query: embedding, embeddings: searchingEmbeddings, spec: searchingSpec)
             try checkEpoch(captured)
             searchResultPhotoAssets = ids.map { PhotoAsset(identifier: $0) }
@@ -929,6 +939,14 @@ class PhotoSearcher: ObservableObject {
     private func rankedPhotoIDs(query: MLShapedArray<Float32>, embeddings: [String: MLMultiArray]? = nil, spec: EmbeddingModelSpec? = nil) throws -> [String] {
         let searchingSpec = spec ?? modelSpec
         let searchingEmbeddings = embeddings ?? savedEmbedding
+        try SimilarityVectorValidation.validateModelIdentity(
+            index: savedEmbeddingModelIdentity,
+            query: searchModelIdentity(for: searchingSpec)
+        )
+        try SimilarityVectorValidation.validateModelIdentity(
+            index: searchModelIdentity(for: searchingSpec),
+            query: searchModelIdentity(for: photoSearchModel.spec)
+        )
         _ = try SimilarityVectorValidation.norm(of: query, dimension: searchingSpec.embeddingDimension)
         let scores: [String: Float]
         if let gpu = gpuSearch, gpu.count > 0 {
@@ -936,7 +954,7 @@ class PhotoSearcher: ObservableObject {
                 throw SimilaritySearchError.indexUnavailable
             }
             do {
-                scores = try gpu.search(queryEmbedding: query)
+                scores = try gpu.search(queryEmbedding: query, modelIdentity: searchModelIdentity(for: searchingSpec))
             } catch SimilaritySearchError.indexUnavailable {
                 gpuSearch = nil
                 logger.error("GPU index unavailable; using validated CPU search.")
@@ -961,6 +979,10 @@ class PhotoSearcher: ObservableObject {
         return scores.filter { (visibleIDs?.contains($0.key) ?? true) && (!hasLibrarySnapshot || allPhotosId[$0.key] != nil) }.sorted {
             $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value
         }.prefix(max(0, TOPK_SIM)).map(\.key)
+    }
+
+    private func searchModelIdentity(for spec: EmbeddingModelSpec) -> SimilarityModelIdentity {
+        SimilarityModelIdentity(spec: spec, checkpointHash: activeReference?.checkpointHash)
     }
 
     private func searchFailureMessage(for error: Error) -> String {
