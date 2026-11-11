@@ -27,7 +27,8 @@ final class EmbeddingModelSpecTests: XCTestCase {
         XCTAssertThrowsError(try makeSpec(embeddingDimension: 0))
         XCTAssertThrowsError(try makeSpec(contextLength: 0))
         XCTAssertThrowsError(try makeSpec(textInputType: .image))
-        XCTAssertThrowsError(try makeSpec(storageScalarType: "float16"))
+        XCTAssertThrowsError(try makeSpec(storageScalarType: "float64"))
+        XCTAssertThrowsError(try makeSpec(storageScalarType: "int8"))
         XCTAssertThrowsError(try makeSpec(tokenizerAssets: ["vocab.json"]))
     }
 
@@ -41,6 +42,15 @@ final class EmbeddingModelSpecTests: XCTestCase {
         XCTAssertNotEqual(first.compatibilityIdentity, differentRevision.compatibilityIdentity)
         XCTAssertNotEqual(first.compatibilityIdentity, differentTokenizer.compatibilityIdentity)
         XCTAssertNotEqual(first.compatibilityIdentity, EmbeddingModelSpec.mobileCLIPS2.compatibilityIdentity)
+    }
+
+    func testFloat16StorageIsAnExplicitCompatibilityContract() throws {
+        let float16 = try makeSpec(modelID: "first", embeddingDimension: 512, storageScalarType: "float16")
+        let float32 = try makeSpec(modelID: "first", embeddingDimension: 512)
+
+        XCTAssertEqual(float16.storageScalarType, .float16)
+        XCTAssertNotEqual(float16.compatibilityIdentity, float32.compatibilityIdentity)
+        XCTAssertEqual(EmbeddingModelSpec.mobileCLIPS2.storageScalarType, .float32)
     }
 
     func testSigLIPContractsAreRepresentableWithoutRegisteringRuntime() throws {

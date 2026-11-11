@@ -40,7 +40,16 @@ enum EmbeddingNormalization: String, Sendable {
 }
 
 enum EmbeddingStorageScalarType: String, Sendable {
+    case float16
     case float32
+
+    /// Bytes per persisted value in a QEMB v2 record.
+    var byteCount: Int {
+        switch self {
+        case .float16: return MemoryLayout<UInt16>.size
+        case .float32: return MemoryLayout<UInt32>.size
+        }
+    }
 }
 
 struct ImagePreprocessing: Equatable, Sendable {
