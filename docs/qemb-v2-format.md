@@ -2,8 +2,9 @@
 
 ## Record encoding
 
-New immutable segments retain the QEMB v2 Float32 encoding. All integers and
-IEEE 754 Float32 bit patterns are little-endian:
+New immutable segments store values in the model's storage scalar type: `float32`
+(IEEE 754 binary32, the default) or `float16` (IEEE 754 binary16). All integers and
+IEEE 754 bit patterns are little-endian:
 
 | Offset | Field |
 | --- | --- |
@@ -15,16 +16,48 @@ IEEE 754 Float32 bit patterns are little-endian:
 
 Metadata binds model ID, checkpoint hash, dimension, scalar type,
 preprocessing fingerprint, and normalization. The transaction manifest also
-binds the complete model compatibility identity (including tokenizer and paired
-tower contracts); its directory is derived from both identities. Float16 remains
-unsupported and issue #8 stays open for that acceptance criterion.
+binds the complete model compatibility identity (including tokenizer, paired
+tower contracts, and scalar type); its directory is derived from both identities.
+A Float16 file whose metadata does not match the active model is rejected as
+`incompatible`. The legacy main file name does not include the scalar type, so a
+legacy file of the other scalar type is rejected by its header.
 
 A record contains a UInt16 UTF-8 identifier length, identifier bytes, and exactly
-`dimension` Float32 values. IDs must be nonempty, at most 65,535 bytes, and contain
+`dimension` values. Each value is 4 bytes (Float32) or 2 bytes (Float16). A record
+is `2 + identifier bytes + dimension × byteCount` bytes long. IDs must be nonempty, at most 65,535 bytes, and contain
 no newline characters. Values must be finite. Zero vectors remain readable for
 legacy blank-entry repair. Inputs are validated before any write. Normalization
 accumulates the squared norm in Double. Counts include physical records in each
 segment, including replacements; replay produces one live value per identifier.
+
+## Float16 encoding
+
+Float16 applies only when the spec sets `storageScalarType: float16`. The default
+model remains Float32.
+
+- Write: when the spec requires normalization, the squared norm is accumulated in
+  Double and each value is divided in Double, then cast to Float32. The Float32
+  value is rounded to Float16 with round-to-nearest-even. The UInt16 bit pattern
+  is written little-endian.
+- Overflow: a value that rounds to ±Infinity is rejected, not clamped. Values
+  from 65520 upward round to infinity; 65519.99 rounds to 65504. Rejection makes
+  `saveAll` and `appendNew` return false and leaves committed state unchanged.
+- Non-finite input (NaN, ±Infinity) is rejected before any write.
+- Read: each 2-byte value is read little-endian. A NaN or infinite bit pattern
+  makes the segment `corrupt`.
+- Precision: the persisted value is within half a Float16 ulp of the normalized
+  value. That is at most 2^-11 relative for normal values and 2^-25 absolute for
+  subnormals. Tests assert the looser bound `max(|exact| × 2^-10, 2^-24)`.
+- Normalization runs before rounding, so a raw magnitude above 65504 persists when
+  its normalized value is representable.
+
+Compaction re-normalizes persisted values, as it does for Float32, but at Float16
+precision. Measured behavior: one compaction moved a stored value by at most one
+Float16 ulp. Repeated compactions can accumulate that drift. A search over
+small-dimension adversarial vectors moved one value by 50 ulps after 50
+compactions, while random 512–1536-dimension samples did not move after 50
+compactions. This is a known limitation and is not corrected here. The tests
+assert one compaction only.
 
 ## Transaction protocol
 
@@ -96,7 +129,11 @@ final directory sync, and orphan cleanup. It exercises append plus checkpoint/de
 replacement, and compaction at every boundary and repeatedly reopens each state.
 Other cases cover generations, stale writers, invalid writes, corrupt/truncated
 segments, migration without source deletion, counts, byte order, and large finite
-normalization. The process continues during these deterministic tests; actual
+normalization. Float16 cases cover round trips at 512, 768, 1152, and 1536
+dimensions; explicit little-endian bit patterns for reads and writes; rejection of
+non-finite and overflowing values; normalize-before-rounding; metadata mismatch
+against the active model; separate Float16 and Float32 transactions in one root;
+and one-compaction drift. The process continues during these deterministic tests; actual
 forced process termination and device filesystem/power-loss testing remain
 separate manual checks. Directory fsync and FileHandle synchronization establish
 the intended durability ordering; simulated exceptions are not physical power

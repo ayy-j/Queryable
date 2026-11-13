@@ -223,7 +223,7 @@ class EmbeddingStore: @unchecked Sendable {
         self.selectedGeneration = generation
         self.spec = spec
         self.checkpointHash = checkpointHash
-        self.recordEmbeddingSize = spec.embeddingDimension * MemoryLayout<Float32>.size
+        self.recordEmbeddingSize = spec.embeddingDimension * spec.storageScalarType.byteCount
         let baseName = "imageEmbedding.\(spec.modelID).\(checkpointHash).v2"
         self.mainFileName = "\(baseName).qemb"
         self.journalFileName = "\(baseName)_journal.qemb"
@@ -369,26 +369,46 @@ class EmbeddingStore: @unchecked Sendable {
             $0.key.utf8.count <= Int(UInt16.max) &&
             $0.value.dataType == .float32 &&
             $0.value.count == spec.embeddingDimension &&
-            MLShapedArray<Float32>(converting: $0.value).scalars.allSatisfy(\.isFinite)
+            persistedScalars($0.value) != nil
         }
     }
 
-    private func recordData(id: String, mlArray: MLMultiArray) -> Data {
+    /// The values persisted for `mlArray`: normalized when the spec requires it, then rounded to the
+    /// storage scalar type. Returns nil when an input or a persisted value is not finite. Float16
+    /// overflow (magnitudes above 65504) is rejected rather than clamped.
+    private func persistedScalars(_ mlArray: MLMultiArray) -> [Float32]? {
+        let scalars = MLShapedArray<Float32>(converting: mlArray).scalars
+        guard scalars.allSatisfy(\.isFinite) else { return nil }
+        let norm = sqrt(scalars.reduce(0.0) { $0 + Double($1) * Double($1) })
+        let values = spec.normalizeEmbeddings && norm > 1e-8
+            ? scalars.map { Float32(Double($0) / norm) }
+            : scalars
+        switch spec.storageScalarType {
+        case .float32:
+            return values
+        case .float16:
+            let halves = values.map { Float16($0) }
+            guard halves.allSatisfy(\.isFinite) else { return nil }
+            return halves.map { Float32($0) }
+        }
+    }
+
+    private func recordData(id: String, mlArray: MLMultiArray) throws -> Data {
         var data = Data()
         let idBytes = Array(id.utf8)
         var idLen = UInt16(idBytes.count).littleEndian
         data.append(Data(bytes: &idLen, count: 2))
         data.append(contentsOf: idBytes)
 
-        // Write embedding as raw Float32 bytes
-        let shaped = MLShapedArray<Float32>(converting: mlArray)
-        let scalars = shaped.scalars
-        let norm = sqrt(scalars.reduce(0.0) { $0 + Double($1) * Double($1) })
-        let values = spec.normalizeEmbeddings && norm > 1e-8
-            ? scalars.map { Float32(Double($0) / norm) }
-            : scalars
-        let bits = values.map { $0.bitPattern.littleEndian }
-        bits.withUnsafeBytes { data.append(contentsOf: $0) }
+        guard let values = persistedScalars(mlArray) else { throw EmbeddingStoreError.invalidRecords }
+        switch spec.storageScalarType {
+        case .float32:
+            let bits = values.map { $0.bitPattern.littleEndian }
+            bits.withUnsafeBytes { data.append(contentsOf: $0) }
+        case .float16:
+            let bits = values.map { Float16($0).bitPattern.littleEndian }
+            bits.withUnsafeBytes { data.append(contentsOf: $0) }
+        }
         return data
     }
 
@@ -412,13 +432,24 @@ class EmbeddingStore: @unchecked Sendable {
                 let embeddingData = try readExactly(recordEmbeddingSize, from: handle)
                 guard embeddingData.count == recordEmbeddingSize else { return false }
                 var floats = [Float32](repeating: 0, count: spec.embeddingDimension)
-                embeddingData.withUnsafeBytes { bytes in
-                    for index in floats.indices {
-                        let bits = bytes.loadUnaligned(fromByteOffset: index * 4, as: UInt32.self)
-                        floats[index] = Float32(bitPattern: UInt32(littleEndian: bits))
+                let decoded = embeddingData.withUnsafeBytes { bytes -> Bool in
+                    switch spec.storageScalarType {
+                    case .float16:
+                        for index in floats.indices {
+                            let bits = UInt16(littleEndian: bytes.loadUnaligned(fromByteOffset: index * 2, as: UInt16.self))
+                            let half = Float16(bitPattern: bits)
+                            guard half.isFinite else { return false }
+                            floats[index] = Float32(half)
+                        }
+                    case .float32:
+                        for index in floats.indices {
+                            let bits = UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: index * 4, as: UInt32.self))
+                            floats[index] = Float32(bitPattern: bits)
+                        }
                     }
+                    return floats.allSatisfy(\.isFinite)
                 }
-                guard floats.allSatisfy(\.isFinite) else { return false }
+                guard decoded else { return false }
                 remainingRecords -= 1
 
                 let shaped = MLShapedArray<Float32>(scalars: floats, shape: [1, spec.embeddingDimension])
